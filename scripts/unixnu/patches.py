@@ -1,6 +1,7 @@
 """Ordered XNU patch series and target-local source preparation."""
 import hashlib
 import json
+import os
 import shutil
 
 from .profiles import resolve_path
@@ -59,8 +60,15 @@ def prepare(ctx, modules):
             # iOS series relies on three of them.
             if path.suffix == '.sh':
                 log(f'kernel: stage {path.name}')
+                # The stagers self-select on MACHINE_CONFIG and MACOS_VERSION, which the
+                # kernel build script sets but this process does not: pass the same values
+                # so a stager cannot silently exit 0 instead of staging.
+                config = ctx.need_config()
+                stage_env = dict(os.environ)
+                stage_env['MACHINE_CONFIG'] = str(config.get('XNU_MACHINE_CONFIG') or 'BCM2837')
+                stage_env.setdefault('MACOS_VERSION', '13.5')
                 try:
-                    run(['bash', str(path)], cwd=work)
+                    run(['bash', str(path)], cwd=work, env=stage_env)
                 except Error as error:
                     shutil.rmtree(work)
                     raise Error(f'XNU stage {path}: {error}') from error
