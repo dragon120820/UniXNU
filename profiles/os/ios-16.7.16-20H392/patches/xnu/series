@@ -1,18 +1,204 @@
-# XNU patches this OS profile adds on top of the arch and SoC series.
+# Ordered XNU patches for iOS 16.7.16 on the OnePlus 6.
 #
-# One entry, and it is the one the iPadOS profiles also carry: the boot-progress
-# markers.  It is not cosmetic for this port -- without it the console shows
-# nothing between the kernel banner and launchd, which is exactly the gap the
-# bring-up procedure keeps asking about (unixnu.com/zh/porting/bring-up, stage 5
-# and 7: "boot-progress=2 shows the last checkpoint").  The patch inserts its
-# calls into the "#if defined(XNU_SHENG_PMGR)" block that
-# UniXNU-sdm845-common/patches/xnu/sheng-platform-power.patch adds to bsd_init.c,
-# and that one arrives through [kernel] patch_series "soc:patches/xnu/series".
+# The 184 sweet-* patches come from the community iOS-on-Snapdragon port
+# (repos/ios-enchilada-fork).  They are written against xnu-8796.141.3 and
+# applied here as one block: measured 182/184 on a clean tree.  The two
+# that need a staged source tree (0031 and 0041 want bsd/sweet_hfs before
+# they apply) are NOT listed: the official pipeline applies series patches
+# before [kernel] archives runs the stagers, so bsd/sweet_hfs does not exist yet.
+# They are recorded in reports/NEXT_TASKS.md as the remaining gap for a writable
+# root volume.
 #
-# The two component:XnuPrelink patches the iPadOS profile lists next to this one
-# are deliberately absent.  They are the static-prelink hooks for xnu-10063
-# (security-init and sparse-index); this profile builds xnu-8796 and carries no
-# [kernel.prelink] section, so the patches have no consumer and their hunk
-# context does not exist in 8796.  Add them together with the prelink section
-# once the 20H392 kernelcache has been extracted.
-arch:../../../patches/xnu/zzz-boot-progress.patch
+# The official profiles/arch/arm64 series is deliberately NOT used: those
+# 56 patches are written against xnu-10063 and only 44 apply here, while
+# layering both series rejects 151 of the community patches because they
+# are two implementations of the same layer.
+
+0001-new-clang-drop-removed-auto-var-init-flag.patch
+0002-new-clang-backport-UIO_STACKBUF.patch
+0003-sweet-framebuffer-serial-console.patch
+0004-sweet-machine-config.patch
+0005-non-pac-build-fixes.patch
+0006-sweet-master-config-open-source-asm-pmap.patch
+0007-sweet-stub-apple-internal-headers.patch
+0008-sweet-fill-closed-lib-gaps-kpc-stub.patch
+0009-sweet-drop-apple-soc-only-exports.patch
+0010-sweet-early-framebuffer-debug.patch
+0011-sweet-physmap-alignment-padding.patch
+0012-sweet-keep-debug-console-after-ttbr0.patch
+0013-sweet-kmem-rng-without-corecrypto.patch
+0014-sweet-kernel-hmac-prng.patch
+0015-sweet-unavailable-trust-cache-runtime.patch
+0016-sweet-device-tree-platform-expert.patch
+0017-sweet-device-tree-virtual-timer-irq.patch
+0018-sweet-boot-cpu-driver.patch
+0019-sweet-builtin-pthread.patch
+0020-sweet-portable-aes-cbc.patch
+0021-sweet-mockfs-ramdisk-root.patch
+0022-sweet-ramdisk-root-without-iomedia.patch
+0023-sweet-builtin-sha256-for-libkern.patch
+0024-sweet-mockfs-virtual-ramdisk-io.patch
+0025-sweet-builtin-amfi-no-entitlements.patch
+0026-sweet-builtin-hfs.patch
+0027-sweet-bearssl-md5.patch
+0028-sweet-ufs-root-device.patch
+0029-sweet-unsealed-root-volume.patch
+0030-sweet-ufs-writes.patch
+0032-sweet-bearssl-sha1.patch
+0033-sweet-bearssl-sha384-sha512.patch
+0034-sweet-ufs-dma-above-4g.patch
+0035-sweet-amfi-entitlements-platform-binaries.patch
+0036-sweet-amfi-cs-signed.patch
+0037-sweet-config-bindfs.patch
+0038-sweet-applekeystore.patch
+0039-sweet-coredump-default-off.patch
+0040-sweet-iowatchdog.patch
+0042-sweet-short-exec-log.patch
+0043-sweet-console-crash-log.patch
+0044-sweet-crash-log-reason.patch
+0045-sweet-iowatchdog-pmu-primary.patch
+0046-sweet-iosurface-iomfb.patch
+0047-sweet-persistent-console-log.patch
+0048-sweet-devnull-tee.patch
+0049-sweet-iokit-trace.patch
+0050-sweet-sandbox-policy.patch
+0051-sweet-crash-heap-strings.patch
+0052-sweet-hfs-rename-swap.patch
+0053-sweet-crash-scan-springboard.patch
+0054-sweet-process-sampler.patch
+0055-sweet-aks-ext-state-sampler-depth.patch
+0056-sweet-fb-throttled-present.patch
+0057-sweet-no-ext-resolver.patch
+0058-sweet-hid-event-services.patch
+0059-sweet-iphone-identity.patch
+0060-sweet-keys-touch-drivers.patch
+0061-sweet-iphone-x-display-size.patch
+0062-sweet-touch-power-battery.patch
+0063-sweet-goodix-geni-packing.patch
+0064-sweet-priv-work-interval.patch
+0065-sweet-smp-psci.patch
+0066-sweet-crash-fault-region.patch
+0067-sweet-console-mute.patch
+0068-sweet-surface-lookup-cached.patch
+0069-sweet-ufs-faster.patch
+0070-sweet-pid-hibernate.patch
+0071-sweet-touch-edge.patch
+0072-sweet-usb-probe.patch
+0073-sweet-usb-device-ep0.patch
+0074-sweet-usb-vbus-override.patch
+0075-sweet-usb-ecm.patch
+0076-sweet-usb-rx-mbuf.patch
+0077-sweet-usb-live-log.patch
+0078-sweet-smp-8-cores.patch
+0079-sweet-display-power.patch
+0080-sweet-net-trace.patch
+0081-sweet-usb-link-state.patch
+0082-sweet-boot-phase-markers.patch
+0083-fajita-console-only.patch
+0084-fajita-panel-console.patch
+0085-fajita-sync-console.patch
+0086-fajita-cpu-match.patch
+0087-fajita-empty-ioacceleratores.patch
+0088-fajita-sweetsurface-client-memory.patch
+0089-fajita-keys-probe.patch
+0090-fajita-touch-rmi4.patch
+0091-fajita-keys.patch
+0092-fajita-rpmh-ldoa28.patch
+0093-fajita-rpmh-bases.patch
+0094-fajita-panic-log.patch
+0095-fajita-touch-bisect.patch
+0096-fajita-touch-tlmm-east.patch
+0097-fajita-touch-xfer.patch
+0098-fajita-touch-rmi2.patch
+0099-fajita-gpu-probe.patch
+0100-fajita-gpu-probe-granular.patch
+0101-fajita-gpu-probe-flush.patch
+0102-fajita-gpu-probe-gccmap.patch
+0103-fajita-gpu-power-cx.patch
+0104-fajita-gpu-gccmap2.patch
+0105-fajita-gpu-clocks.patch
+0106-fajita-gpu-roots.patch
+0107-fajita-gpu-gmu-fw.patch
+0108-fajita-gpu-fw-parse.patch
+0109-fajita-gpu-smmu-state.patch
+0110-fajita-gpu-hfi-reset.patch
+0111-fajita-gpu-cm3cfg-def.patch
+0112-fajita-gpu-no-smmu-writes.patch
+0113-fajita-gpu-drop-smmu-reads.patch
+0114-fajita-gpu-fewer-reads.patch
+0115-fajita-gpu-no-power.patch
+0116-fajita-gpu-lean.patch
+0117-fajita-gpu-no-flush.patch
+0118-fajita-gpu-scratch-trace.patch
+0119-fajita-gpu-lowbank-probe.patch
+0120-fajita-gpu-scratch-first.patch
+0121-fajita-gpu-logva.patch
+0122-fajita-gpu-scratch-16k.patch
+0123-fajita-gpu-stage3-bergamota.patch
+0124-fajita-gpu-log-print-guard.patch
+0125-fajita-gpu-smmu-impl.patch
+0126-fajita-gpu-hold-reset.patch
+0127-fajita-gpu-reset-hygiene.patch
+0128-fajita-gpu-gdsc-reset.patch
+0129-fajita-gpu-level-gate-fix.patch
+0130-fajita-gpu-stage4.patch
+0131-fajita-gpu-pa64.patch
+0132-fajita-gpu-hfi-msgs.patch
+0133-fajita-gpu-hfi-readidx.patch
+0134-fajita-gpu-hfi-verdict.patch
+0135-fajita-gpu-pdcrsc.patch
+0136-fajita-gpu-arcs-fix.patch
+0137-fajita-gpu-gxrail.patch
+0138-fajita-gpu-gxgdsc.patch
+0139-fajita-gpu-coreregs.patch
+0140-fajita-gpu-gxclocks.patch
+0141-fajita-gpu-cpctx.patch
+0142-fajita-gpu-gxslumber.patch
+0143-fajita-gpu-cpmem.patch
+0144-fajita-gpu-cphwinit.patch
+0145-fajita-gpu-cpmeinit.patch
+0146-fajita-gpu-zap.patch
+0147-fajita-gpu-firstsubmit.patch
+0148-fajita-gpu-keepalive.patch
+0149-fajita-gpu-clientva.patch
+0150-fajita-gpu-ib-submit.patch
+0151-fajita-gpu-bo.patch
+0152-fajita-gpu-abi.patch
+0153-fajita-gpu-arena.patch
+0154-fajita-gpu-devio.patch
+0155-fajita-gpu-ioc.patch
+0156-fajita-gpu-capi.patch
+0157-fajita-gpu-capi-contract.patch
+0158-fajita-gpu-iokit-client.patch
+0159-fajita-gpu-va.patch
+0160-fajita-gpu-abi-log.patch
+0161-fajita-gpu-sel-log.patch
+0162-fajita-gpu-arena-pages.patch
+0163-fajita-gpu-mapgem-pa.patch
+0164-fajita-adreno-verify.patch
+0165-fajita-adreno-cache-clean.patch
+0166-fajita-gpu-tlb.patch
+0167-fajita-metal-stub.patch
+0168-fajita-msm-params.patch
+0169-fajita-arena-size.patch
+0170-fajita-arena-chunks.patch
+0171-fajita-arena-big-bo.patch
+0172-fajita-arena-onewindow.patch
+0173-enchilada-panel-geometry.patch
+0174-sweet-pmic-rtc-time.patch
+0175-sweet-userland-archive.patch
+0176-sweet-display-off-at-once.patch
+0177-sweet-cpu-clocks.patch
+0178-sweet-metal-plugin-optional.patch
+0179-sweet-gpu-arena-reuse.patch
+0180-enchilada-touch-edge.patch
+0181-sweet-fb-offy.patch
+0182-sweet-fb-stayon.patch
+0183-sweet-geni-uart-console.patch
+0184-sweet-fb-heartbeat.patch
+
+# Three official architecture patches that the community tree still needs.
+# Measured to apply cleanly on top of the community block above.
+arch:../../../patches/xnu/local-availability.patch
+arch:../../../patches/xnu/cxx-flag-dependencies.patch
+arch:../../../patches/xnu/kernel-sdk-root.patch
