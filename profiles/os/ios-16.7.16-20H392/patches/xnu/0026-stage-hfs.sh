@@ -53,14 +53,16 @@ path.write_text(text)
 # Take the non-iPhone branch, which is the kext-config SWEET actually wants
 # (there is no AppleKeyStore here, so content protection cannot be built).
 cfg = target / 'core' / 'kext-config.h'
-cfg_text = cfg.read_text()
-phone = '#if (TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR)\n'
-if cfg_text.count(phone) != 1:
+lines = cfg.read_text().splitlines(keepends=True)
+seen = 0
+for i, line in enumerate(lines):
+    if line.lstrip().startswith('#if (TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR)'):
+        lines[i] = ('#if 0 /* SWEET is not iOS: content protection needs'
+                    ' AppleKeyStore */\n')
+        seen += 1
+if seen != 1:
     raise SystemExit(f'HFS source changed: {cfg}')
-cfg_text = cfg_text.replace(
-    phone,
-    '#if 0 /* SWEET is not iOS: content protection needs AppleKeyStore */\n')
-cfg.write_text(cfg_text)
+cfg.write_text(''.join(lines))
 PY
 
 # Kernel builds use -nostdinc; HFS's kext-config.h needs the SDK's target macros.
