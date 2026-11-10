@@ -1,8 +1,10 @@
 """Symbol names of the XNU kernel of a build tree, for the archives that must not collide with it."""
+import os
 import subprocess
 from pathlib import Path
 
-OBJ = 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837'
+MACHINE = os.environ.get('XNU_MACHINE_CONFIG') or 'BCM2837'
+OBJ = f'build/xnu/ios-obj/DEVELOPMENT_ARM64_{MACHINE}'
 
 
 def defined_names(paths, global_only):

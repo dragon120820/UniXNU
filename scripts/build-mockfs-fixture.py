@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Compile XNU's minimal executable-root filesystem for offline tests."""
 import json
+import os
 from pathlib import Path
 import subprocess
 
 from kernel_target import check_object
 
 ROOT = Path(__file__).resolve().parents[1]
-recipe = ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/bsd/DEVELOPMENT/vfs_conf.o.json'
+MACHINE = os.environ.get('XNU_MACHINE_CONFIG') or 'BCM2837'
+recipe = ROOT / f'build/xnu/ios-obj/DEVELOPMENT_ARM64_{MACHINE}/bsd/DEVELOPMENT/vfs_conf.o.json'
 record = json.loads(recipe.read_text().strip().rstrip(','))
 out = ROOT / 'build/mockfs-fixture'
 out.mkdir(parents=True, exist_ok=True)

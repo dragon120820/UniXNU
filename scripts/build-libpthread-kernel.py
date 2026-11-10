@@ -30,7 +30,8 @@ for patch in sorted((ROOT / 'patches/libpthread').glob('*.patch')):
 SOURCE = WORK
 OUT = ROOT / 'build/libpthread-kernel'
 OUT.mkdir(parents=True, exist_ok=True)
-recipe = ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/osfmk/DEVELOPMENT/prng_random.o.json'
+MACHINE = os.environ.get('XNU_MACHINE_CONFIG') or 'BCM2837'
+recipe = ROOT / f'build/xnu/ios-obj/DEVELOPMENT_ARM64_{MACHINE}/osfmk/DEVELOPMENT/prng_random.o.json'
 record = json.loads(recipe.read_text().strip().rstrip(','))
 sdk = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip()
 
