@@ -2,12 +2,12 @@
 #
 # The 184 sweet-* patches come from the community iOS-on-Snapdragon port
 # (repos/ios-enchilada-fork).  They are written against xnu-8796.141.3 and
-# applied here as one block: measured 182/184 on a clean tree.  The two
-# that need a staged source tree (0031 and 0041 want bsd/sweet_hfs before
-# they apply) are NOT listed: the official pipeline applies series patches
-# before [kernel] archives runs the stagers, so bsd/sweet_hfs does not exist yet.
-# They are recorded in reports/NEXT_TASKS.md as the remaining gap for a writable
-# root volume.
+# applied here as one block: measured 182/184 on a clean tree.  The two that
+# failed there (0031 and 0041) fail only because they touch bsd/sweet_hfs
+# before it exists, so this series lists them after 0026-stage-hfs.sh.  A
+# series entry ending in .sh is executed from the XNU root by scripts/unixnu
+# patches.py instead of being applied as a diff: the three community stagers
+# fetch libpthread, BearSSL and HFS at their pinned commits.
 #
 # The official profiles/arch/arm64 series is deliberately NOT used: those
 # 56 patches are written against xnu-10063 and only 44 apply here, while
@@ -32,18 +32,25 @@
 0016-sweet-device-tree-platform-expert.patch
 0017-sweet-device-tree-virtual-timer-irq.patch
 0018-sweet-boot-cpu-driver.patch
+# Stages libpthread-514.100.2 into bsd/pthread/sweet_libpthread before the patch that includes it.
+0019-stage-libpthread.sh
 0019-sweet-builtin-pthread.patch
+# Stages pinned BearSSL into libkern/crypto/sweet_bearssl for the AES/MD5/SHA patches below.
+0020-stage-bearssl.sh
 0020-sweet-portable-aes-cbc.patch
 0021-sweet-mockfs-ramdisk-root.patch
 0022-sweet-ramdisk-root-without-iomedia.patch
 0023-sweet-builtin-sha256-for-libkern.patch
 0024-sweet-mockfs-virtual-ramdisk-io.patch
 0025-sweet-builtin-amfi-no-entitlements.patch
+# Stages hfs-627.100.6 into bsd/sweet_hfs; 0031 and 0041 need it to exist.
+0026-stage-hfs.sh
 0026-sweet-builtin-hfs.patch
 0027-sweet-bearssl-md5.patch
 0028-sweet-ufs-root-device.patch
 0029-sweet-unsealed-root-volume.patch
 0030-sweet-ufs-writes.patch
+0031-sweet-read-write-root.patch
 0032-sweet-bearssl-sha1.patch
 0033-sweet-bearssl-sha384-sha512.patch
 0034-sweet-ufs-dma-above-4g.patch
@@ -53,6 +60,7 @@
 0038-sweet-applekeystore.patch
 0039-sweet-coredump-default-off.patch
 0040-sweet-iowatchdog.patch
+0041-sweet-hfs-link-notes.patch
 0042-sweet-short-exec-log.patch
 0043-sweet-console-crash-log.patch
 0044-sweet-crash-log-reason.patch

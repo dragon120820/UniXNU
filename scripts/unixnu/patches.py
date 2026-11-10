@@ -54,6 +54,17 @@ def prepare(ctx, modules):
         run(['git', 'clone', '--quiet', '--shared', '--no-checkout', module.path, work])
         git(work, 'checkout', '--quiet', '--detach', revision)
         for path in selected:
+            # A series entry may be a shell script instead of a patch: it stages a source
+            # provider (libpthread, BearSSL, HFS) that later patches include. The community
+            # iOS series relies on three of them.
+            if path.suffix == '.sh':
+                log(f'kernel: stage {path.name}')
+                try:
+                    run(['bash', str(path)], cwd=work)
+                except Error as error:
+                    shutil.rmtree(work)
+                    raise Error(f'XNU stage {path}: {error}') from error
+                continue
             log(f'kernel: patch {path.name}')
             try:
                 git(work, 'apply', str(path))
