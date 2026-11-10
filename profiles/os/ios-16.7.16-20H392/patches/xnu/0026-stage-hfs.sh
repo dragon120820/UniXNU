@@ -71,7 +71,7 @@ lines = enc.read_text().splitlines(keepends=True)
 seen = 0
 for i, line in enumerate(lines):
     if line.rstrip('\n') == '#if !TARGET_OS_IPHONE':
-        lines[i] = '#if 0 /* SWEET builds hfs_encodings into the kernel */\n'
+        lines[i] = '#if 1 /* SWEET builds hfs_encodings into the kernel */\n'
         seen += 1
 if seen != 1:
     raise SystemExit(f'HFS source changed: {enc}')
