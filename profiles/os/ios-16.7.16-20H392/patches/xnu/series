@@ -1,0 +1,18 @@
+# XNU patches this OS profile adds on top of the arch and SoC series.
+#
+# One entry, and it is the one the iPadOS profiles also carry: the boot-progress
+# markers.  It is not cosmetic for this port -- without it the console shows
+# nothing between the kernel banner and launchd, which is exactly the gap the
+# bring-up procedure keeps asking about (unixnu.com/zh/porting/bring-up, stage 5
+# and 7: "boot-progress=2 shows the last checkpoint").  The patch inserts its
+# calls into the "#if defined(XNU_SHENG_PMGR)" block that
+# UniXNU-sdm845-common/patches/xnu/sheng-platform-power.patch adds to bsd_init.c,
+# and that one arrives through [kernel] patch_series "soc:patches/xnu/series".
+#
+# The two component:XnuPrelink patches the iPadOS profile lists next to this one
+# are deliberately absent.  They are the static-prelink hooks for xnu-10063
+# (security-init and sparse-index); this profile builds xnu-8796 and carries no
+# [kernel.prelink] section, so the patches have no consumer and their hunk
+# context does not exist in 8796.  Add them together with the prelink section
+# once the 20H392 kernelcache has been extracted.
+arch:../../../patches/xnu/zzz-boot-progress.patch
