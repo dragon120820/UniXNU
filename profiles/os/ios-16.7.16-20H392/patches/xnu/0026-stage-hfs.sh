@@ -63,6 +63,19 @@ for i, line in enumerate(lines):
 if seen != 1:
     raise SystemExit(f'HFS source changed: {cfg}')
 cfg.write_text(''.join(lines))
+# hfs_encodings.h hides its whole interface behind #if !TARGET_OS_IPHONE and the
+# macOS SDK claims to be iOS, so the file that includes it and the file itself
+# disagree: hfs_encodings.c compiles into this kernel and needs the types.
+enc = target / 'hfs_encodings' / 'hfs_encodings.h'
+lines = enc.read_text().splitlines(keepends=True)
+seen = 0
+for i, line in enumerate(lines):
+    if line.rstrip('\n') == '#if !TARGET_OS_IPHONE':
+        lines[i] = '#if 0 /* SWEET builds hfs_encodings into the kernel */\n'
+        seen += 1
+if seen != 1:
+    raise SystemExit(f'HFS source changed: {enc}')
+enc.write_text(''.join(lines))
 PY
 
 # Kernel builds use -nostdinc; HFS's kext-config.h needs the SDK's target macros.
