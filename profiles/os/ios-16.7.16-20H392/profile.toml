@@ -1,0 +1,134 @@
+# iOS 16.7.16 (20H392) for iPhone10,3 / D22AP (Apple A11, t8015).
+#
+# This profile exists because UniXNU ships iPadOS and macOS profiles only: the three
+# upstream ones are ipados-17.7.11-21H461, ipados-26.5.2-23F84 and ipados-27.0.1-24A446.
+# An iPhone X userspace is what the enchilada port targets, so the OS layer has to name
+# it.  Everything below that is not pinned to an iPad is taken from the published IPSW
+# metadata of iPhone10,3 (api.ipsw.me/v4/device/iPhone10,3) and from the device tree of
+# the handset itself.
+#
+# Deviation from the upstream profiles, and why:
+#   xnu_version = 8796.101.5   iOS 16.7.x is Darwin 22.6.0, which the running kernel
+#                              prints as "Darwin Kernel Version 22.6.0".  xnu-10063 is
+#                              Darwin 23.6.0 (iOS/iPadOS 17) and would be an OS mismatch.
+#   xnu_revision               aca3beaa... is the commit of tag xnu-8796.101.5.
+#   darwin = 22.6.0            taken from the handset's own kernel banner, not guessed.
+
+["os"]
+"name" = "ios-16.7.16-20H392"
+"darwin" = "22.6.0"
+"xnu_version" = "8796.101.5"
+"xnu_revision" = "aca3beaa3dfbd42498b42c5e5ce20a938e6554e5"
+"driverkit_tag" = "xnu-8796.101.5"
+"trustcache_tag" = "xnu-8796.101.5"
+"ios_version" = "16.7"
+"abi" = ["IOGPUFamily", "IOHIDFamily-2031.120.4", "IOMobileGraphicsFamily"]
+
+
+["ipsw"]
+"url" = "https://updates.cdn-apple.com/2025FallFCS/fullrestores/122-77006/1158E502-D76D-4226-AA06-ED5E30CD1111/iPhone10,3,iPhone10,6_16.7.16_20H392_Restore.ipsw"
+"product" = "iPhone10,3"
+"version" = "16.7.16"
+"build" = "20H392"
+"device_class" = "d22ap"
+# t8015 = 0x8015; the handset reports the same chip id through the platform expert.
+"chip_id" = 32789
+"board_id" = 6
+"fetch" = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustCache"]
+
+# Pins are optional (ipsw.py checks a component against [ipsw.sha256] when the key is
+# present and skips the check when it is not).  No per-DMG digest is known for this
+# restore yet, so nothing is pinned here rather than pinning a guess.  The whole-archive
+# digest is recorded for the operator:
+#   sha256 ece1194f7e233e9109c5790a8d23a4564a10a254e15ec5b09978a343265568fb
+#   6,171,035,648 bytes
+
+
+# No [kernel.prelink] section on purpose.  Static prelink hashes the ORIGINAL kernelcache
+# of this build and grafts the kexts of the handset image onto a freshly built kernel;
+# that kernelcache has not been extracted from this IPSW and its roots list is unknown.
+# `unixnu build kernel` does not need the section (only `build prelink` reads it), and
+# writing an unverified kernelcache_sha256 or a guessed roots list would fail the build
+# with "does not match the kernelcache this board was qualified against".  Add the
+# section, with the real digest, once the kernelcache is in hand.
+
+
+["adt"]
+
+["adt"."root"]
+
+["adt"."root"."string"]
+"model" = "iPhone10,3"
+"target-type" = "D22"
+# The board name first: the audio server keys its routing database and MediaExperience
+# its per-board tables on it.
+"compatible" = "D22AP"
+
+
+["adt"."chosen"]
+
+["adt"."chosen"."string"]
+"osenvironment" = "main"
+"crypto-hash-method" = "sha2-384"
+
+
+["adt"."chosen"."u32"]
+"certificate-production-status" = 0
+"effective-production-status-ap" = 0
+"certificate-security-mode" = 1
+"effective-security-mode-sep" = 1
+"amfi-only-platform-code" = 1
+
+
+["adt"."product"]
+
+["adt"."product"."string"]
+"product-name" = "iPhone X"
+"product-description" = "iPhone X"
+"artwork-device-idiom" = "phone"
+# The panel is a P3 part but SweetFramebuffer presents sRGB, so the sRGB gamut is what
+# the compositor must be told (ios-topaz does the same).
+"artwork-display-gamut" = "sRGB"
+"compatible-device-fallback" = "iPhone9,2"
+"graphics-featureset-class" = "APPLE4"
+"graphics-featureset-fallbacks" = "APPLE3:APPLE3v1:APPLE2:APPLE1:GLES2,0"
+"baseband-chipset" = "mav17"
+
+
+["adt"."product"."u32"]
+# 0x0984 = 2436, the iPhone X canvas height.
+"artwork-device-subtype" = 2436
+"artwork-scale-factor" = 3
+"device-perf-memory-class" = 4
+"builtin-mics" = 4
+"ui-background-quality" = 100
+"ui-weather-quality" = 100
+
+
+# MGGetProductType() looks this 20-byte id up in libMobileGestalt's product table
+# (iPhone10,3: 0x81be1ec4); without it every client that switches on the product type
+# sees an unknown device.
+["adt"."product"."bytes"]
+"product-id" = "fd079b298144a7deb4d7c87fef3eb474d8f0e7eb"
+
+
+["adt"."product"."audio"]
+
+["adt"."product"."audio"."u32"]
+"wireless-splitter" = 1
+
+
+["adt"."defaults"]
+
+["adt"."defaults"."u32"]
+"kern.maxvnodes" = 66560
+
+[userdata]
+# Disk images of this OS, in window order; the device sets the partition geometry.
+windows = [{ name = "OS", component = "OS" }, { name = "SystemOS", component = "Cryptex1,SystemOS", optional = true }]
+
+[root]
+# The APFS volume UUID the root policy signs.  This value was inherited from the iPadOS
+# profile and still has to be re-derived from an iOS 16 root volume: the current root is
+# an HFS+ volume built by the community tooling, which has no APFS volume UUID at all.
+os_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
