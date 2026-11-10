@@ -47,6 +47,20 @@ text = text.replace(include, '#if CONFIG_PROTECT\n' + include + '#endif\n')
 i, j = text.index(first), text.index(end)
 text = text[:i] + '#if CONFIG_PROTECT\n' + text[i:j].rstrip('\n') + '\n#endif\n\n' + text[j:]
 path.write_text(text)
+
+# This header turns CONFIG_PROTECT back on right after sweet_hfs_compat.h
+# clears it: the macOS SDK's TargetConditionals.h claims TARGET_OS_IPHONE.
+# Take the non-iPhone branch, which is the kext-config SWEET actually wants
+# (there is no AppleKeyStore here, so content protection cannot be built).
+cfg = target / 'core' / 'kext-config.h'
+cfg_text = cfg.read_text()
+phone = '#if (TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR)\n'
+if cfg_text.count(phone) != 1:
+    raise SystemExit(f'HFS source changed: {cfg}')
+cfg_text = cfg_text.replace(
+    phone,
+    '#if 0 /* SWEET is not iOS: content protection needs AppleKeyStore */\n')
+cfg.write_text(cfg_text)
 PY
 
 # Kernel builds use -nostdinc; HFS's kext-config.h needs the SDK's target macros.
