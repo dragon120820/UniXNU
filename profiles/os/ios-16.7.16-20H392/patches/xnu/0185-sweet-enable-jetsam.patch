@@ -1,0 +1,32 @@
+jetsam: turn on the memory-status kill policy the embedded half needs
+
+config/MASTER declares "options CONFIG_JETSAM # <jetsam>", so the option is only
+emitted when an activated group lists the token "jetsam". The SWEET MASTER copies
+VM_BASE from MASTER.arm64.MacOSX, which does not:
+
+    #  VM_BASE = [ vm_pressure_events memorystatus ... ]
+
+Every embedded MASTER in the tree does list it (MASTER.arm64:65,
+MASTER.arm64.iPhoneOS:76, MASTER.arm64.bcm2837:63, MASTER.arm64.BridgeOS:61), and
+the official macos profile says the kernel serves the system with the board
+embedded memory options, CONFIG_JETSAM included.
+
+Without it the embedded half of vm_compressor.c cannot compile. The extern sits
+behind "#if CONFIG_JETSAM" (vm_compressor.c:770-773,
+bsd/sys/kern_memorystatus.h:632-636), but two uses at vm_compressor.c:3215 and
+:4132 are in the "#else /* XNU_TARGET_OS_OSX */" half with no guard of their own.
+With SDKROOT iphoneos, PLATFORM is iPhoneOS, XNU_TARGET_OS_OSX stays undefined,
+and the build stops at "use of undeclared identifier memorystatus_swap_all_apps"
+(run 42897960519).
+
+--- a/config/MASTER.arm64.sweet
++++ b/config/MASTER.arm64.sweet
+@@ -77,7 +77,7 @@
+ #  SCHED_RELEASE =  [ SCHED_BASE ]
+ #  SCHED_DEV =      [ SCHED_BASE ]
+ #  SCHED_DEBUG =    [ SCHED_BASE config_sched_grrr config_sched_proto ]
+-#  VM_BASE =        [ vm_pressure_events memorystatus config_code_decryption encrypted_swap config_deferred_reclaim ]
++#  VM_BASE =        [ vm_pressure_events jetsam memorystatus config_code_decryption encrypted_swap config_deferred_reclaim ]
+ #  VM_RELEASE =     [ VM_BASE ]
+ #  VM_DEV =         [ VM_BASE dynamic_codesigning pgzalloc ]
+ #  VM_DEBUG =       [ VM_BASE dynamic_codesigning pgzalloc ]

@@ -204,6 +204,7 @@
 0182-sweet-fb-stayon.patch
 0183-sweet-geni-uart-console.patch
 0184-sweet-fb-heartbeat.patch
+0185-sweet-enable-jetsam.patch
 
 # Three official architecture patches that the community tree still needs.
 # Measured to apply cleanly on top of the community block above.
