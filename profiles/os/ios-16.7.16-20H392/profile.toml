@@ -66,9 +66,19 @@
 ["adt"."root"."string"]
 "model" = "iPhone10,3"
 "target-type" = "D22"
-# The board name first: the audio server keys its routing database and MediaExperience
-# its per-board tables on it.
-"compatible" = "D22AP"
+
+# The root compatible strings, in order.  The first entry is the board name the OS
+# reads as the hardware model (the audio server keys its routing database and
+# MediaExperience its per-board tables on it), so D22AP must stay first.
+#
+# "xiaomi,sweet" is not decoration: SweetPlatformExpert is the only config-table
+# entry in this kernel, and it matches IONameMatch 'xiaomi,sweet'
+# (patches/0016-sweet-device-tree-platform-expert.patch).  Without it the DT
+# platform expert is the stock one, so processTopLevel() never runs - no /cpus
+# nubs, no /arm-io nubs, and AppleCLCD can never match /arm-io/disp0.  The DTS's
+# own strings (oneplus,enchilada / qcom,sdm845) are appended after these.
+["adt"."root"."strings"]
+"compatible" = ["D22AP", "iPhone10,3", "xiaomi,sweet", "AppleARM"]
 
 
 ["adt"."chosen"]
