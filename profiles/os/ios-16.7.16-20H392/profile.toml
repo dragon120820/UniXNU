@@ -156,6 +156,28 @@
 "home-button-type" = 2
 "opposed-power-vol-buttons" = 1
 
+# arm-io children the SoC DTS cannot express.  SweetPlatformExpert publishes a nub
+# for every arm-io child except gic (iokit/Kernel/arm/SweetPlatformExpert.cpp), so a
+# node here is what makes a built-in driver able to match it.
+#
+#   wdt   - watchdogd reads IODeviceTree:/arm-io/wdt for `no-pmu`; without it the
+#           daemon tries to set the PMU boot stage and crashes (the customer build
+#           ignores -wdt_no_pmu).
+#   disp0 - IOMobileFramebuffer.framework (iOS 16.7) counts /arm-io children with
+#           device_type display-subsystem and reads the canvas size from the node;
+#           AppleCLCD matches compatible "sweet,display".  The canvas is the
+#           iPhone X's presented size (1125x2436), not this panel's 1080x2280:
+#           the firmware framebuffer scales into it (SweetFramebuffer.cpp).
+["adt"."arm-io"]
+["adt"."arm-io"."wdt"."u32"]
+"no-pmu" = 1
+["adt"."arm-io"."disp0"."string"]
+"device_type" = "display-subsystem"
+"compatible" = "sweet,display"
+["adt"."arm-io"."disp0"."u32"]
+"canvas-width" = 1125
+"canvas-height" = 2436
+
 ["adt"."defaults"]
 
 ["adt"."defaults"."u32"]

@@ -398,16 +398,25 @@ def generate(dtb, config, *, unique_chip_id=None, data=False, trust=False, addon
     if len(set(names)) != len(names):
         raise Error('Exported ADT hardware names must be unique')
     base, size = arm_io_window(hardware)
+    arm_io_children = [node(name, hardware_properties(entry, handles, base))
+                       for name, entry in zip(names, hardware)]
+    # A profile may add arm-io children the hardware DTS cannot describe: `wdt` carries
+    # `no-pmu` (a flag hardware_properties() would drop) and `disp0` carries the canvas
+    # size, which is a geometry choice rather than something the SoC DTS knows.  The
+    # kernel creates a nub for every arm-io child except gic, so these reach
+    # AppleCLCD (IONameMatch "sweet,display") and watchdogd (IODeviceTree:/arm-io/wdt).
+    for name, table in (platform.get('arm-io') or {}).items():
+        arm_io_children.append(platform_node(name, table))
     children.append(node('arm-io', [('device_type', b'arm-io\0'), ('#address-cells', struct.pack('<I', 2)),
                          ('#size-cells', struct.pack('<I', 2)), ('ranges', struct.pack('<QQQ', 0, base, size))],
-                         [node(name, hardware_properties(entry, handles, base)) for name, entry in zip(names, hardware)]))
+                         arm_io_children))
     for name in ('defaults', 'options', 'product'):
         children.append(platform_node(name, platform.get(name, {})))
     # Any other [adt.<name>] table is a node of its own: a kernel that matches nodes by name (this port's
     # sweet-fbcon / sweet-ufs / sweet-geni-uart / buttons) declares them here instead of in the hardware DTS,
     # because the DTS only exports what /arm-io can describe with reg/ranges.
     for name in platform:
-        if name not in ('root', 'chosen', 'defaults', 'options', 'product'):
+        if name not in ('root', 'chosen', 'defaults', 'options', 'product', 'arm-io'):
             children.append(platform_node(name, platform[name]))
     # A configured root 'compatible' goes before the hardware DTS's own entries: an OS identity's board name comes first (the OS
     # reads the first entry as the hardware model) and the board's compatible strings stay matchable after it.
