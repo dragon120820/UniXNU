@@ -9,7 +9,10 @@
 	url = https://github.com/UniXNU/ArmVirtPlatform.git
 [submodule "drivers/DarwinBoot"]
 	path = drivers/DarwinBoot
-	url = https://github.com/UniXNU/DarwinBoot.git
+	# Fork: upstream aligns the kernel window to 2 MiB, but this board maps
+	# with 32 MiB L2 blocks (16K pages), so load and link must be congruent
+	# modulo 32 MiB or every kernel virtual address resolves elsewhere.
+	url = https://github.com/dragon120820/DarwinBoot.git
 [submodule "drivers/SoftwareAES"]
 	path = drivers/SoftwareAES
 	url = https://github.com/UniXNU/SoftwareAES.git
