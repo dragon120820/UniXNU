@@ -305,19 +305,23 @@ def rebase(kernel, data):
         # Native bootstrap table-capacity checks can grow before SCTLR setup.
         # Locate the unique instruction sequence in this bounded entry body;
         # do not assume a constant offset from the Mach-O entry point.
-        matches = []
-        for va in range(START_FIRST_CPU, START_FIRST_CPU + 0x1000, 4):
-            def instruction(at):
-                return struct.unpack_from('<I', data, file_offset(at))[0]
-            if (instruction(va) == 0xD5181000 and
-                    instruction(va + 4) == 0xD5033FDF and
-                    instruction(va + 0x20) == 0xD2A00600 and
-                    instruction(va + 0x24) == 0xD5181040):
-                matches.append(va)
+        def instruction(at):
+            return struct.unpack_from('<I', data, file_offset(at))[0]
+        # The stock layout writes CPACR 0x20 bytes after the SCTLR write.  A patch
+        # that edits common_start between them moves it - this port's SWEET
+        # machine config drops the SCTLR readback - so anchor on the SCTLR/isb
+        # pair alone and then look for the CPACR prologue instead of trusting a
+        # fixed offset.
+        matches = [va for va in range(START_FIRST_CPU, START_FIRST_CPU + 0x1000, 4)
+                   if instruction(va) == 0xD5181000 and instruction(va + 4) == 0xD5033FDF]
         if len(matches) != 1:
-            raise SystemExit('Require one verified SCTLR/ISB/CPACR entry sequence')
+            raise SystemExit('Require one verified SCTLR/ISB entry sequence')
         MMU_ENABLE_VA = matches[0]
-        AFTER_MMU_VA = MMU_ENABLE_VA + 0x20
+        cpacr = [va for va in range(MMU_ENABLE_VA + 8, MMU_ENABLE_VA + 0x40, 4)
+                 if instruction(va) == 0xD2A00600 and instruction(va + 4) == 0xD5181040]
+        if len(cpacr) != 1:
+            raise SystemExit('Require one CPACR prologue after the SCTLR write')
+        AFTER_MMU_VA = cpacr[0]
     if '_panic' in names and '_vinfo' in names:
         PANIC_VA = names['_panic']
         # Board diagnostics seed this ABI-compatible prefix from valid console
