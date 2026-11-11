@@ -129,6 +129,21 @@
 ["adt"."defaults"."u32"]
 "kern.maxvnodes" = 66560
 
+# libpthread pinned to the release that pairs with xnu-8796.141.3.  feeds.toml carries
+# libpthread-519.120.4 for the Darwin 23 profiles; its kern_support.c calls
+# pthread_kern->proc_get_jit_entitled, a callback xnu-8796's bsd/sys/pthread_shims.h does
+# not have, so build-libpthread-kernel.py stops with "no member named
+# 'proc_get_jit_entitled' in 'struct pthread_callbacks_s'" (run 42949596685).  Apple's
+# macos-135 release.json pairs 8796.141.3 with 514.100.2; the same commit the community
+# series stages into bsd/pthread/sweet_libpthread.
+[[source]]
+name = "libpthread"
+kind = "refer"
+git = "https://github.com/apple-oss-distributions/libpthread.git"
+ref = "libpthread-514.100.2"
+commit = "a6c70ca0e544347a0377babf748f831577ec24f9"
+
+
 [userdata]
 # Disk images of this OS, in window order; the device sets the partition geometry.
 windows = [{ name = "OS", component = "OS" }, { name = "SystemOS", component = "Cryptex1,SystemOS", optional = true }]
