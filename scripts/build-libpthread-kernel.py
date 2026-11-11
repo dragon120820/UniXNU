@@ -67,7 +67,8 @@ def compile_one(source, destination, namespace=None):
     result = subprocess.run(command, cwd=record['directory'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     destination.with_suffix('.log').write_text(result.stdout)
     if result.returncode:
-        raise SystemExit(result.stdout[-4500:])
+        errors = [line for line in result.stdout.splitlines() if 'error:' in line]
+        raise SystemExit('\n'.join(errors[-20:] + [result.stdout[-1500:]]))
     check_object(destination.read_bytes(), destination.name)
 
 def names(path, mode, global_only=True):
