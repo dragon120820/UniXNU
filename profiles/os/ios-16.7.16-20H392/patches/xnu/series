@@ -212,3 +212,9 @@
 arch:../../../patches/xnu/local-availability.patch
 arch:../../../patches/xnu/cxx-flag-dependencies.patch
 arch:../../../patches/xnu/kernel-sdk-root.patch
+# The kernel half of libpthread: build-libpthread-kernel.py compiles this file
+# last and links it into libpthread_kernel.a.  It is an official architecture
+# patch, so the community block does not carry it, and without it the archive
+# step stops with "no such file or directory: bsd/kern/source_pthread_bootstrap.c"
+# (run 42950916039).
+arch:../../../patches/xnu/source-pthread-bootstrap.patch
