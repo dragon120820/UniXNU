@@ -197,7 +197,10 @@ def build(ctx, modules):
         generated.mkdir(parents=True, exist_ok=True)
         env['UNIXNU_GENERATED_DIR'] = str(generated)
     env['JOBS'] = str(ctx.jobs)
-    machine = os.environ.get('XNU_MACHINE_CONFIG') or 'BCM2837'
+    # xnu_env() puts XNU_MACHINE_CONFIG in the dictionary handed to the build, not in
+    # os.environ, so reading it there always fell back to BCM2837 and the record of a
+    # SWEET pass was looked for under the wrong directory.
+    machine = env.get('XNU_MACHINE_CONFIG') or 'BCM2837'
     record = ctx.tree / f'build/xnu/ios-obj/DEVELOPMENT_ARM64_{machine}/osfmk/DEVELOPMENT/startup.o.json'
     if not record.is_file():
         # The archive builders and the boot progress layer read compile records of the XNU build, which only an earlier
