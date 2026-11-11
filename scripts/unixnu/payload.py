@@ -80,7 +80,7 @@ def write_volume(stage, image, label, size_mib):
     image.unlink(missing_ok=True)
     env = dict(os.environ, MTOOLS_SKIP_CHECK='1', TZ='UTC')
     sectors = size_mib * 2048
-    run(['mformat', '-C', '-F', '-T', str(sectors), '-v', label, '-N', '53484e47', '-i', image, '::'], env=env, capture=True)
+    run(['mformat', '-C', '-T', str(sectors), '-v', label, '-N', '53484e47', '-i', image, '::'], env=env, capture=True)
     for entry in sorted(stage.iterdir()):
         run(['mcopy', '-i', image, '-s', '-Q', '-m', entry, '::/'], env=env, capture=True)
 
