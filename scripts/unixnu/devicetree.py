@@ -374,7 +374,8 @@ def generate(dtb, config, *, unique_chip_id=None, data=False, trust=False, addon
         values = registers(entry)
         if len(values) != 1 or values[0][0] > 0xffffffff:
             raise Error(f'{entry.name}: CPU affinity must fit a u32')
-        properties = [('reg', struct.pack('<I', values[0][0])),
+        properties = [('AAPL,phandle', struct.pack('<I', 0x100 + len(cpu_nodes))),
+                      ('reg', struct.pack('<I', values[0][0])),
                       ('state', b'running\0' if not cpu_nodes else b'waiting\0'), ('device_type', b'cpu\0'),
                       ('compatible', entry.properties['compatible']),
                       ('timebase-frequency', struct.pack('<I', cpus.scalar('timebase-frequency')))]
@@ -387,7 +388,9 @@ def generate(dtb, config, *, unique_chip_id=None, data=False, trust=False, addon
         cpu_nodes.append(node(f'cpu{len(cpu_nodes)}', properties))
     if not cpu_nodes:
         raise Error('Hardware DTS requires an enabled boot CPU')
-    children.append(node('cpus', children=cpu_nodes))
+    # openplus: /cpus carries the cells and handles the platform expert reads
+    children.append(node('cpus', [('#address-cells', struct.pack('<I', 1)),
+                                 ('#size-cells', struct.pack('<I', 0))], cpu_nodes))
     psci = next((entry for entry in root.children if entry.name == 'psci'), None)
     if len(cpu_nodes) > 1:
         if psci is None or psci.strings('method') not in (['smc'], ['hvc']):
