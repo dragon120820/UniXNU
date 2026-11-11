@@ -401,9 +401,14 @@ def generate(dtb, config, *, unique_chip_id=None, data=False, trust=False, addon
     children.append(node('arm-io', [('device_type', b'arm-io\0'), ('#address-cells', struct.pack('<I', 2)),
                          ('#size-cells', struct.pack('<I', 2)), ('ranges', struct.pack('<QQQ', 0, base, size))],
                          [node(name, hardware_properties(entry, handles, base)) for name, entry in zip(names, hardware)]))
-    for name in ('defaults', 'options', 'product', 'buttons'):
-        if name in platform or name in ('defaults', 'options', 'product'):
-            children.append(platform_node(name, platform.get(name, {})))
+    for name in ('defaults', 'options', 'product'):
+        children.append(platform_node(name, platform.get(name, {})))
+    # Any other [adt.<name>] table is a node of its own: a kernel that matches nodes by name (this port's
+    # sweet-fbcon / sweet-ufs / sweet-geni-uart / buttons) declares them here instead of in the hardware DTS,
+    # because the DTS only exports what /arm-io can describe with reg/ranges.
+    for name in platform:
+        if name not in ('root', 'chosen', 'defaults', 'options', 'product'):
+            children.append(platform_node(name, platform[name]))
     # A configured root 'compatible' goes before the hardware DTS's own entries: an OS identity's board name comes first (the OS
     # reads the first entry as the hardware model) and the board's compatible strings stay matchable after it.
     configured = dict(typed_properties(platform.get('root', {})))

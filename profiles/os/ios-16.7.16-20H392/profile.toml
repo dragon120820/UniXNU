@@ -124,10 +124,43 @@
 "wireless-splitter" = 1
 
 
+# Nodes this port's kernel patches match by name (SecureDTFindEntry("name", ...)).  The official
+# generator used to emit only /chosen, /cpus, /psci, /arm-io, /defaults, /options and /product, so a
+# kernel built from the community series found none of its own nodes in an ADT from this pipeline
+# (out/chain1/adt-from-chain.bin: sweet-fbcon 0, sweet-ufs 0, sweet-geni-uart 0, buttons 0).
+# reg is <address size> as two little-endian u64, hence bytes.
+["adt"."sweet-fbcon"."bytes"]
+# 0x9d400000 + 0x02400000: the bootloader's continuous splash region (SimpleFbDxe's GOP base).
+"reg" = "0000409d000000000000400200000000"
+
+["adt"."sweet-fbcon"."u32"]
+# The fitted panel is 1080x2280, not the 6T's 1080x2340 that mkadt.py's default assumed.
+"width" = 1080
+"height" = 2280
+"stride" = 4320
+
+["adt"."sweet-geni-uart"."bytes"]
+"reg" = "0040a800000000000040000000000000"
+
+["adt"."sweet-ufs"."string"]
+"compatible" = "qcom,ufshc"
+
+["adt"."sweet-ufs"."bytes"]
+"reg" = "0040d801000000000030000000000000"
+
+["adt"."buttons"."strings"]
+"button-names" = ["volup", "voldown", "hold"]
+
+["adt"."buttons"."u32"]
+# MobileGestalt HomeButtonType = IODeviceTree:/buttons home-button-type (D22AP: 2, no Home button).
+"home-button-type" = 2
+"opposed-power-vol-buttons" = 1
+
 ["adt"."defaults"]
 
 ["adt"."defaults"."u32"]
 "kern.maxvnodes" = 66560
+"no-effaceable-storage" = 1
 
 # libpthread pinned to the release that pairs with xnu-8796.141.3.  feeds.toml carries
 # libpthread-519.120.4 for the Darwin 23 profiles; its kern_support.c calls
