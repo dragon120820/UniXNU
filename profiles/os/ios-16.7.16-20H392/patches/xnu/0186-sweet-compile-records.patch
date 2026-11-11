@@ -1,0 +1,44 @@
+kernel: write the compile record 8796 never wrote
+
+xnu-10063 passes -MJ $(@:o=o.json) to every compile, which is how the
+archive builders get the exact command for an object
+(scripts/build-arm-driver.py reads iokit/DEVELOPMENT/IOPlatformExpert
+.cpo.json, build-libpthread-kernel.py reads prng_random.o.json, and so
+on).  xnu-8796.141.3 has no such flag, so a 8796 tree produces objects
+but no records, and every archive step dies with FileNotFoundError
+even though the kernel itself built.
+
+The flag goes in the same three rule lines 10063 uses: the C, the C++
+and the assembly rule.  clang writes the record next to nothing else --
+it is the object path with .json in place of .o, which is exactly the
+name the builders look for.
+---
+--- a/makedefs/MakeInc.rule
++++ b/makedefs/MakeInc.rule
+@@ -392,7 +392,7 @@
+ #
+ 
+ S_RULE_0=@$(LOG_AS) "$@"
+-S_RULE_1A=$(_v)${S_KCC} -c ${SFLAGS} -MD -MF $(@:o=d) -MP ${$@_SFLAGS_ADD} ${INCFLAGS} ${$@_INCFLAGS}
++S_RULE_1A=$(_v)${S_KCC} -c ${SFLAGS} -MD -MF $(@:o=d) -MJ $(@:o=o.json) -MP ${$@_SFLAGS_ADD} ${INCFLAGS} ${$@_INCFLAGS}
+ S_RULE_1B=$(<F)
+ S_RULE_2=
+ 
+@@ -400,7 +400,7 @@
+ # Compilation rules to generate .o from .c for normal files
+ #
+ C_RULE_0=@$(LOG_CC) "$@"
+-C_RULE_1A=$(_v)${KCC} -c ${filter-out ${$@_CFLAGS_RM}, ${CFLAGS} ${CWARNFLAGS}} -MD -MF $(@:o=d) -MP ${$@_CFLAGS_ADD} ${$@_CWARNFLAGS_ADD} ${INCFLAGS} ${$@_INCFLAGS}
++C_RULE_1A=$(_v)${KCC} -c ${filter-out ${$@_CFLAGS_RM}, ${CFLAGS} ${CWARNFLAGS}} -MD -MF $(@:o=d) -MJ $(@:o=o.json) -MP ${$@_CFLAGS_ADD} ${$@_CWARNFLAGS_ADD} ${INCFLAGS} ${$@_INCFLAGS}
+ C_RULE_1B=$(<F)
+ C_RULE_2=
+ 
+@@ -424,7 +424,7 @@
+ #   The config tool slickly changes the last source filename char to 'o'
+ #   for the object filename.
+ P_RULE_0=@$(LOG_CXX) "$@"
+-P_RULE_1A=$(_v)${KC++} -o $@ -c ${CXXFLAGS} ${filter-out ${$@_CFLAGS_RM}, ${CFLAGS} ${CXXWARNFLAGS}} -MD -MF $(@:o=d) -MP ${$@_CFLAGS_ADD} ${$@_CXXWARNFLAGS_ADD} ${INCFLAGS} ${$@_INCFLAGS}
++P_RULE_1A=$(_v)${KC++} -o $@ -c ${CXXFLAGS} ${filter-out ${$@_CFLAGS_RM}, ${CFLAGS} ${CXXWARNFLAGS}} -MD -MF $(@:o=d) -MJ $(@:o=o.json) -MP ${$@_CFLAGS_ADD} ${$@_CXXWARNFLAGS_ADD} ${INCFLAGS} ${$@_INCFLAGS}
+ P_RULE_1B=$(<F)
+ P_RULE_2=
+ 
