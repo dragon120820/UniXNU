@@ -1,0 +1,19 @@
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -94,8 +94,14 @@
+ 		return;
+ 	}
+ 	uint32_t color = 0xff00ff00u | ((stage & 7u) * 32u << 16);
+-	for (unsigned int y = EARLY_HEIGHT - 32; y < EARLY_HEIGHT; y++) {
+-		for (unsigned int x = stage * 48; x < (stage + 1) * 48; x++) {
++	/* openplus: one full-width band per stage, stacked from 2100 upward in
++	 * 32 row steps.  A 48 pixel patch is below what any camera in this rig
++	 * can resolve, and this band never lands on the three entry-path bars
++	 * the SWEET_STAGE_BAR macro paints at 2216/2184/2152. */
++	unsigned int band = stage % 16u;
++	unsigned int top = 2100u - 32u * band;
++	for (unsigned int y = top; y < top + 32u; y++) {
++		for (unsigned int x = 0; x < EARLY_WIDTH; x++) {
+ 			EARLY_FB[y * EARLY_STRIDE + x] = color;
+ 		}
+ 	}
