@@ -209,6 +209,7 @@
 0187-sweet-mockfs-from-archive.patch
 0188-sweet-early-visible.patch
 0189-sweet-stage0-visible.patch
+0190-sweet-stage-bars.patch
 
 # Three official architecture patches that the community tree still needs.
 # Measured to apply cleanly on top of the community block above.

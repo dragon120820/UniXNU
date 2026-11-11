@@ -1,0 +1,56 @@
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -502,6 +502,25 @@
+  * Cold boot init routine.  Called from __start
+  *   x0 - Boot args
+  */
++#if defined(SWEET)
++/* openplus: full-width bands a camera can read.
++ * y = 2280 - 32*(n+1), stride 4320 bytes.  x0-x4 are dead here. */
++.macro SWEET_STAGE_BAR row, colr
++	MOV64	x0, (0x9d400000 + (\row) * 4320)
++	MOV32	w1, \colr
++	mov	x2, #32
++	mov	x3, #4320
++9\@:	mov	x4, #1080
++8\@:	str	w1, [x0], #4
++	subs	x4, x4, #1
++	b.ne	8\@b
++	add	x0, x0, x3
++	subs	x2, x2, #1
++	b.ne	9\@b
++	dsb	sy
++.endm
++#endif
++
+ 	.align 2
+ 	.globl EXT(start_first_cpu)
+ LEXT(start_first_cpu)
+@@ -744,6 +763,9 @@
+ 	mov		x19, lr
+ 	bl		EXT(set_mmu_ttb)
+ 	mov		lr, x19
++#if defined(SWEET)
++	SWEET_STAGE_BAR 2216, 0x0000ffff	/* A: page tables installed */
++#endif
+ 	add		x0, x25, PGBYTES
+ 	and		x0, x0, #(TTBR_BADDR_MASK)
+ 	MSR_TTBR1_EL1_X0
+@@ -894,11 +916,17 @@
+ 	// x1: KVA page table phys base
+ 	mrs	x1, TTBR1_EL1
+ 	bl	EXT(kasan_bootstrap)
++#if defined(SWEET)
++	SWEET_STAGE_BAR 2184, 0x0000ff00	/* B: kasan bootstrap returned */
++#endif
+ 
+ 	mov	x0, x20
+ 	mov	lr, x21
+ #endif
+ 
++#if defined(SWEET)
++	SWEET_STAGE_BAR 2152, 0x00ff0000	/* C: about to enter arm_init */
++#endif
+ 	// Return to arm_init()
+ 	ret
+ 
