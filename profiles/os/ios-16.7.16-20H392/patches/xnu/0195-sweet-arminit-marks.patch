@@ -1,21 +1,16 @@
 --- a/osfmk/arm/arm_init.c
 +++ b/osfmk/arm/arm_init.c
-@@ -347,14 +347,18 @@
- 	unsigned int dt_entry_size = 0;
- 
+@@ -349,4 +349,6 @@
  	arm_setup_pre_sign();
 +	sweet_early_mark(12, "arm_setup_pre_sign done");
  
  	arm_slide_rebase_and_sign_image();
 +	sweet_early_mark(13, "arm_slide_rebase_and_sign_image done");
  
- 	/* If kernel integrity is supported, use a constant copy of the boot args. */
- 	const_boot_args = *args;
+@@ -355,4 +357,6 @@
  	BootArgs = args = &const_boot_args;
 +	sweet_early_mark(14, "boot args copied");
  
  	cpu_data_init(&BootCpuData);
 +	sweet_early_mark(15, "cpu_data_init done");
  #if defined(HAS_APPLE_PAC)
- 	/* bootstrap cpu process dependent key for kernel has been loaded by start.s */
- 	BootCpuData.rop_key = ml_default_rop_pid();
