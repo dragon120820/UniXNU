@@ -217,6 +217,7 @@
 0195-sweet-arminit-marks.patch
 0196-sweet-early-tpidr.patch
 0197-sweet-armvminit-marks.patch
+0198-sweet-peinit-marks.patch
 
 # Three official architecture patches that the community tree still needs.
 # Measured to apply cleanly on top of the community block above.

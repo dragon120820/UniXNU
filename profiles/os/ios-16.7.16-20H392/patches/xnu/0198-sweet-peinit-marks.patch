@@ -1,0 +1,23 @@
+--- a/pexpert/arm/pe_init.c
++++ b/pexpert/arm/pe_init.c
+@@ -23,2 +23,3 @@
+ #include <pexpert/arm64/board_config.h>
++#include <arm64/sweet_early.h>
+ 
+@@ -425,3 +426,5 @@
+ 		SecureDTInit(PE_state.deviceTreeHead, PE_state.deviceTreeSize);
++		sweet_early_mark(41, "SecureDTInit done");
+ 		pe_identify_machine(boot_args_ptr);
++		sweet_early_mark(42, "pe_identify_machine done");
+ 	} else {
+@@ -502,2 +505,3 @@
+ 		pe_init_debug();
++		sweet_early_mark(43, "pe_init_debug done");
+ 	}
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -92,3 +92,3 @@
+ {
+-	if (early_disabled || stage > 40) {
++	if (early_disabled || stage > 64) {
+ 		return;
