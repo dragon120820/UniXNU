@@ -1,0 +1,31 @@
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -140,6 +140,14 @@
+ 		return;
+ 	}
+ 	early_panicking = 1;
++	/*
++	 * openplus: start below the top bezel and put each register on its own
++	 * line. A 1080 pixel panel fits 67 characters; the one-line form wrapped
++	 * and the mpidr value was unreadable on every photograph so far.
++	 */
++	early_row = 6;
++	early_col = 0;
++	sweet_early_clear_row();
+ 	sweet_early_string("\nSWEET EARLY PANIC: ");
+ 	{
+ 		uint64_t mpidr, tpidr, spsel_value;
+@@ -149,9 +157,11 @@
+ 		__asm__ volatile("mrs %0, spsel" : "=r"(spsel_value));
+ 		sweet_early_string("CPU mpidr=");
+ 		sweet_early_hex(mpidr);
+-		sweet_early_string(" tpidr_el1=");
++		sweet_early_string("\n");
++		sweet_early_string("CPU tpidr_el1=");
+ 		sweet_early_hex(tpidr);
+-		sweet_early_string(" spsel=");
++		sweet_early_string("\n");
++		sweet_early_string("CPU spsel=");
+ 		sweet_early_hex(spsel_value);
+ 		sweet_early_string("\n");
+ 	}

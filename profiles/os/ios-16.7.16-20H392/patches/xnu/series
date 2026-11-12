@@ -212,6 +212,7 @@
 0190-sweet-stage-bars.patch
 0191-sweet-mark-visible.patch
 0192-sweet-panic-cpu-id.patch
+0193-sweet-panic-readable.patch
 
 # Three official architecture patches that the community tree still needs.
 # Measured to apply cleanly on top of the community block above.
