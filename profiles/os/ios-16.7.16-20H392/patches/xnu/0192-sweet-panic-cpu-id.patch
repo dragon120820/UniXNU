@@ -1,0 +1,41 @@
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -110,6 +110,17 @@
+ 	sweet_early_putc('\n');
+ }
+ 
++static void
++sweet_early_hex(uint64_t value)
++{
++	static const char digits[] = "0123456789abcdef";
++
++	sweet_early_string("0x");
++	for (int shift = 60; shift >= 0; shift -= 4) {
++		sweet_early_putc(digits[(value >> shift) & 0xfu]);
++	}
++}
++
+ void
+ sweet_early_panic(const char *fmt, va_list *args)
+ {
+@@ -124,6 +135,20 @@
+ 	}
+ 	early_panicking = 1;
+ 	sweet_early_string("\nSWEET EARLY PANIC: ");
++	{
++		uint64_t mpidr, tpidr, spsel_value;
++
++		__asm__ volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
++		__asm__ volatile("mrs %0, tpidr_el1" : "=r"(tpidr));
++		__asm__ volatile("mrs %0, spsel" : "=r"(spsel_value));
++		sweet_early_string("CPU mpidr=");
++		sweet_early_hex(mpidr);
++		sweet_early_string(" tpidr_el1=");
++		sweet_early_hex(tpidr);
++		sweet_early_string(" spsel=");
++		sweet_early_hex(spsel_value);
++		sweet_early_string("\n");
++	}
+ 	va_list copy;
+ 	va_copy(copy, *args);
+ 	_doprnt(fmt, &copy, sweet_early_putc, 16);
