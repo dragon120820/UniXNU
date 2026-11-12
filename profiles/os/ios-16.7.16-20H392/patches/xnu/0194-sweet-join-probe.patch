@@ -1,0 +1,75 @@
+--- a/osfmk/arm64/sweet_early.h
++++ b/osfmk/arm64/sweet_early.h
+@@ -10,6 +10,7 @@
+ void sweet_early_mark(unsigned int stage, const char *label);
+ void sweet_early_putc(char c);
+ void sweet_early_panic(const char *fmt, va_list *args);
++void sweet_early_printf(const char *fmt, ...);
+ void sweet_early_relocate(uint64_t base);
+ void sweet_early_disable(void);
+ #else
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -170,6 +170,26 @@
+ 	_doprnt(fmt, &copy, sweet_early_putc, 16);
+ 	va_end(copy);
+ 	sweet_early_putc('\n');
++	__asm__ volatile("dsb sy" ::: "memory");
++}
++
++/*
++ * openplus: a panic-free variant of the panel printer, for call sites that
++ * run often and only need to speak up when something is wrong.
++ */
++void
++sweet_early_printf(const char *fmt, ...)
++{
++	va_list args, copy;
++
++	if (early_disabled) {
++		return;
++	}
++	va_start(args, fmt);
++	va_copy(copy, args);
++	_doprnt(fmt, &copy, sweet_early_putc, 16);
++	va_end(copy);
++	va_end(args);
+ 	__asm__ volatile("dsb sy" ::: "memory");
+ }
+ 
+--- a/osfmk/kern/cpu_quiesce.c
++++ b/osfmk/kern/cpu_quiesce.c
+@@ -36,6 +36,7 @@
+ 
+ #include <kern/sched_prim.h>
+ #include <kern/percpu.h>
++#include <arm64/sweet_early.h>
+ #include <kern/ast.h>
+ 
+ #include <kern/cpu_quiesce.h>
+--- a/osfmk/kern/cpu_quiesce.c
++++ b/osfmk/kern/cpu_quiesce.c
+@@ -191,6 +191,23 @@
+ void
+ cpu_quiescent_counter_join(__unused uint64_t ctime)
+ {
++	/* openplus: the panel is the only console that survives this path. Speak
++	 * up only when the thread register is already dead, so a healthy boot
++	 * stays silent. */
++	{
++		unsigned long j_tpidr, j_lr, j_sp;
++		static int j_reported;
++
++		__asm__ volatile("mrs %0, TPIDR_EL1" : "=r" (j_tpidr));
++		if (j_tpidr == 0 && !j_reported) {
++			j_reported = 1;
++			__asm__ volatile("mov %0, x30" : "=r" (j_lr));
++			__asm__ volatile("mov %0, sp" : "=r" (j_sp));
++			sweet_early_printf("JOIN tpidr=0 lr=%lx sp=%lx\n",
++			    j_lr, j_sp);
++			sweet_early_mark(11, "join entered with a dead thread");
++		}
++	}
+ 	struct cpu_quiesce *st = PERCPU_GET(cpu_quiesce);
+ 	__assert_only int cpuid = cpu_number();
+ 
