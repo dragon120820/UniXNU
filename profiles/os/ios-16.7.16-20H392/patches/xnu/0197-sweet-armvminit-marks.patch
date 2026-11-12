@@ -1,0 +1,29 @@
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -1870,2 +1870,3 @@
+ 	gVirtBase = args->virtBase;
++	sweet_early_mark(30, "gVirtBase copied");
+ 	gPhysBase = args->physBase;
+@@ -1904,2 +1905,3 @@
+ 	physmap_base = phystokv(args->topOfKernelData);
++	sweet_early_mark(31, "physmap_base computed");
+ #endif
+@@ -1979,2 +1981,3 @@
+ 	avail_start = args->topOfKernelData;
++	sweet_early_mark(32, "avail_start set");
+ 
+@@ -1986,2 +1989,3 @@
+ 	invalid_tte = (tt_entry_t *)alloc_ptpage(TRUE);
++	sweet_early_mark(33, "first alloc_ptpage done");
+ 	invalid_ttep = kvtophys((vm_offset_t)invalid_tte);
+@@ -2235,2 +2239,3 @@
+ 
++	sweet_early_mark(34, "arm_vm_auxkc_init next");
+ 	if (arm_vm_auxkc_init()) {
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -92,3 +92,3 @@
+ {
+-	if (early_disabled || stage > 20) {
++	if (early_disabled || stage > 40) {
+ 		return;
