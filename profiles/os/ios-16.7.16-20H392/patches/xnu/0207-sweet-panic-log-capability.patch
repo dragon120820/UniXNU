@@ -1,0 +1,184 @@
+--- a/pexpert/arm/pe_init.c
++++ b/pexpert/arm/pe_init.c
+@@ -93,2 +93,29 @@
+ 
++#if defined(SWEET)
++/* BSP-only boot capability discovery; no allocation and no fabricated backing. */
++enum sweet_panic_region_state {
++	SWEET_PANIC_UNSUPPORTED,
++	SWEET_PANIC_FAILED,
++	SWEET_PANIC_MAPPED
++};
++static enum sweet_panic_region_state sweet_panic_region_state;
++static boolean_t sweet_panic_region_checked;
++static const char *sweet_panic_region_failure = "failed (incomplete panic RAM declaration)";
++
++const char *sweet_panic_region_status(void);
++const char *
++sweet_panic_region_status(void)
++{
++	switch (sweet_panic_region_state) {
++	case SWEET_PANIC_UNSUPPORTED:
++		return "unsupported (no reserved panic RAM declared)";
++	case SWEET_PANIC_FAILED:
++		return sweet_panic_region_failure;
++	case SWEET_PANIC_MAPPED:
++		return "failed (debug buffer not initialized)";
++	}
++	return "failed (unknown panic RAM state)";
++}
++#endif
++
+ static void
+@@ -96,2 +123,82 @@
+ {
++#if defined(SWEET)
++	vm_offset_t mapped;
++	uintptr_t pa, extent;
++	unsigned int length;
++
++	/* PE_create_console may be called again; never erase or remap a live log. */
++	if (sweet_panic_region_checked) {
++		return;
++	}
++	sweet_panic_region_checked = TRUE;
++#ifdef PLATFORM_PANIC_LOG_PADDR
++	sweet_panic_region_state = SWEET_PANIC_FAILED;
++	pa = PLATFORM_PANIC_LOG_PADDR;
++	extent = PLATFORM_PANIC_LOG_SIZE;
++	if (extent > (unsigned int)-1) {
++		sweet_panic_region_failure = "failed (panic RAM size not representable)";
++		return;
++	}
++	length = (unsigned int)extent;
++#else
++	DTEntry entry, chosen;
++	unsigned int reg_size = 0, length_size = 0;
++	uintptr_t const *reg_prop = NULL;
++	uint32_t const *length_prop = NULL;
++	boolean_t have_pram = (kSuccess == SecureDTLookupEntry(0, "pram", &entry));
++	boolean_t have_length = (kSuccess == SecureDTLookupEntry(0, "/chosen", &chosen) &&
++	    kSuccess == SecureDTGetProperty(chosen, "embedded-panic-log-size",
++	    (void const **)&length_prop, &length_size));
++
++	if (!have_pram && !have_length) {
++		return; /* Absence is unsupported, not successful initialization. */
++	}
++	sweet_panic_region_state = SWEET_PANIC_FAILED;
++	if (!have_pram || !have_length) {
++		return;
++	}
++	if (kSuccess != SecureDTGetProperty(entry, "reg", (void const **)&reg_prop, &reg_size) ||
++	    reg_prop == NULL || reg_size != 2 * sizeof(*reg_prop)) {
++		sweet_panic_region_failure = "failed (invalid pram reg length)";
++		return;
++	}
++	if (length_prop == NULL || length_size != sizeof(*length_prop)) {
++		sweet_panic_region_failure = "failed (invalid embedded-panic-log-size length)";
++		return;
++	}
++	/* DT property storage need not be naturally aligned. */
++	uintptr_t reg[2];
++	bcopy(reg_prop, reg, sizeof(reg));
++	bcopy(length_prop, &length, sizeof(length));
++	pa = reg[0];
++	extent = reg[1];
++#endif
++	if (pa == 0 || extent == 0 || pa > UINTPTR_MAX - extent ||
++	    length <= sizeof(struct embedded_panic_header) || length > extent) {
++		sweet_panic_region_failure = "failed (invalid panic RAM range or log size)";
++		return;
++	}
++	mapped = ml_io_map_wcomb(pa, length);
++	if (mapped == 0) {
++		sweet_panic_region_failure = "failed (panic RAM mapping failed)";
++		return;
++	}
++	/* Publish only a fully validated mapping, never the disk sweetlog ring. */
++	gPanicBase = mapped;
++	gPanicSize = length;
++	panic_text_len = length - sizeof(struct embedded_panic_header);
++	panic_info = (struct embedded_panic_header *)mapped;
++	sweet_panic_region_state = SWEET_PANIC_MAPPED;
++	if (panic_info->eph_magic == 'SHMC') {
++		panic_console_available = TRUE;
++		return;
++	}
++	if (panic_info->eph_magic == 'BTRC') {
++		return;
++	}
++	if (panic_info->eph_magic == EMBEDDED_PANIC_MAGIC) {
++		printf("iBoot didn't extract panic log from previous session crash, this is bad\n");
++	}
++	bzero((void *)mapped, length);
++#else /* !SWEET: preserve the platform implementation. */
+ #ifdef PLATFORM_PANIC_LOG_PADDR
+@@ -180,2 +287,3 @@
+ 	bzero((void *)gPanicBase, gPanicSize);
++#endif /* SWEET */
+ }
+--- a/osfmk/kern/debug.c
++++ b/osfmk/kern/debug.c
+@@ -467,2 +467,21 @@
+ 
++#if defined(SWEET) && defined(__arm64__)
++extern const char *sweet_panic_region_status(void);
++static boolean_t sweet_debug_log_initialized;
++static boolean_t sweet_debug_log_failed;
++
++const char *sweet_debug_log_status(void);
++const char *
++sweet_debug_log_status(void)
++{
++	if (sweet_debug_log_initialized) {
++		return "initialized (reserved panic RAM debug buffer ready)";
++	}
++	if (sweet_debug_log_failed) {
++		return "failed (invalid debug buffer backing)";
++	}
++	return sweet_panic_region_status();
++}
++#endif
++
+ void
+@@ -471,2 +490,16 @@
+ #if defined(__arm64__)
++#if defined(SWEET)
++	if (sweet_debug_log_initialized) {
++		return; /* Preserve the current write pointer and accumulated text. */
++	}
++	if (!gPanicBase) {
++		return; /* machine_init reports the exact region capability status. */
++	}
++	if (gPanicSize <= sizeof(struct embedded_panic_header) ||
++	    gPanicBase > UINTPTR_MAX - gPanicSize ||
++	    panic_info != (struct embedded_panic_header *)gPanicBase) {
++		sweet_debug_log_failed = TRUE;
++		return;
++	}
++#else
+ 	if (!gPanicBase) {
+@@ -475,2 +508,3 @@
+ 	}
++#endif
+ 	/* Shift debug buf start location and size by the length of the panic header */
+@@ -479,2 +513,5 @@
+ 	debug_buf_size = gPanicSize - sizeof(struct embedded_panic_header);
++#if defined(SWEET)
++	sweet_debug_log_initialized = TRUE;
++#endif
+ #else
+--- a/osfmk/arm/machine_routines_common.c
++++ b/osfmk/arm/machine_routines_common.c
+@@ -1429,3 +1429,10 @@
+ 	debug_log_init();
+-	printf("SWEET BF: machine_init: debug_log_init ok\n");
++#if defined(SWEET) && defined(__arm64__)
++	{
++		extern const char *sweet_debug_log_status(void);
++		printf("SWEET BF: machine_init: debug_log_init %s\n", sweet_debug_log_status());
++	}
++#else
++	printf("SWEET BF: machine_init: debug_log_init returned\n");
++#endif
+ 	printf("SWEET BF: machine_init: clock_config enter\n");

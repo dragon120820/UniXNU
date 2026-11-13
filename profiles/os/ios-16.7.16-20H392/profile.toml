@@ -89,6 +89,10 @@
 
 
 ["adt"."chosen"."u32"]
+# XNU 8796 arm64 boot.h: 608-byte command line, flags at 0x2d0,
+# memSizeActual at 0x2d8. Requires the profile-aware DarwinBoot loader;
+# never infer the wire layout from Revision/Version (both layouts use 2/2).
+"darwinboot-command-line-size" = 608
 "certificate-production-status" = 0
 "effective-production-status-ap" = 0
 "certificate-security-mode" = 1
