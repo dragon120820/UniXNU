@@ -299,6 +299,11 @@ def generate(dtb, config, *, unique_chip_id=None, data=False, trust=False, addon
             handles[handle] = entry
     payload, platform = config.get('payload', {}), config.get('adt', {})
     options = payload.get('adt', {})
+    # The hardware DTS describes physical E/P cores. A single-cluster XNU
+    # machine configuration may instead require one logical SMP topology.
+    cpu_topology = options.get('cpu_topology', 'hardware')
+    if cpu_topology not in ('hardware', 'smp'):
+        raise Error('payload.adt.cpu_topology must be hardware or smp')
     memory = [entry for entry in root.children if entry.strings('device_type') == ['memory'] and entry.enabled()]
     if len(memory) != 1 or len(registers(memory[0])) != 1:
         raise Error('ADT handoff requires one contiguous DRAM range')
@@ -384,7 +389,10 @@ def generate(dtb, config, *, unique_chip_id=None, data=False, trust=False, addon
             kind = entry.strings('unixnu,cluster-type')
             if kind not in (['E'], ['P']):
                 raise Error(f'{entry.name}: unixnu,cluster-type must be "E" or "P"')
-            properties.append(('cluster-type', struct.pack('<I', ord(kind[0]))))
+            # Zero selects CLUSTER_TYPE_SMP in ml_parse_cpu_topology. Do not
+            # invent a second scheduler cluster for a MAX_CPU_CLUSTERS=1 kernel.
+            value = 0 if cpu_topology == 'smp' else ord(kind[0])
+            properties.append(('cluster-type', struct.pack('<I', value)))
         cpu_nodes.append(node(f'cpu{len(cpu_nodes)}', properties))
     if not cpu_nodes:
         raise Error('Hardware DTS requires an enabled boot CPU')
