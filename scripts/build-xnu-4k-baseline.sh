@@ -865,6 +865,14 @@ make -C .cache/xnu-work "${XNU_BUILD_TARGET:-build}" SDKROOT="${XNU_SDKROOT:-iph
   CFLAGS_EXTRA="$EXTRA_CFLAGS" "${EXTRA_MAKE_ARGS[@]}" ${XNU_HOST_MAKE_ARGS[@]+"${XNU_HOST_MAKE_ARGS[@]}"} \
   OBJROOT="$ROOT/build/xnu/ios-obj" SYMROOT="$ROOT/build/xnu/ios-sym" DSTROOT="$ROOT/build/xnu/ios-dst"
 if [ "${XNU_SOURCE_CORECRYPTO14:-0}" = 1 ] && [ "$CRYPTO_BOOTSTRAP_MODE" = source ]; then
-  python3 scripts/seal-source-crypto-kernel.py \
-    "build/xnu/ios-obj/DEVELOPMENT_ARM64_$XNU_MACHINE_CONFIG/mach.development.$XNU_MACHINE_LC.unstripped"
+  # make has already produced both outputs. Sealing only the unstripped file
+  # leaves the stripped deliverable with its original HMAC/static_if bytes.
+  # Seal each independently after its final text transformation; do not copy
+  # an HMAC between images or rely on a later make to regenerate the output.
+  for SOURCE_CRYPTO_IMAGE in \
+    "build/xnu/ios-obj/DEVELOPMENT_ARM64_$XNU_MACHINE_CONFIG/mach.development.$XNU_MACHINE_LC.unstripped" \
+    "build/xnu/ios-obj/DEVELOPMENT_ARM64_$XNU_MACHINE_CONFIG/mach.development.$XNU_MACHINE_LC"; do
+    test -s "$SOURCE_CRYPTO_IMAGE"
+    python3 scripts/seal-source-crypto-kernel.py "$SOURCE_CRYPTO_IMAGE"
+  done
 fi
