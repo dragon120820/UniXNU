@@ -1,0 +1,9 @@
+diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
+--- a/makedefs/MakeInc.def
++++ b/makedefs/MakeInc.def
+@@ -565,3 +565,4 @@
+ 		  $(BOUND_CHECKS_DEFINES) \
+-		  $(DEFINES)
++		  $(DEFINES) \
++		  $(CFLAGS_EXTRA)
+ 
