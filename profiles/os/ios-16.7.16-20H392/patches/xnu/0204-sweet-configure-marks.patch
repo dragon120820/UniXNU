@@ -1,0 +1,23 @@
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -398,7 +398,12 @@
+ 	configure_timer_apple_regs();
++	sweet_early_mark(44, "configure_timer_apple_regs done");
+ 	wfe_timeout_configure();
++	sweet_early_mark(45, "wfe_timeout_configure done");
+ 	wfe_timeout_init();
++	sweet_early_mark(46, "wfe_timeout_init done");
+ 
+ 	configure_misc_apple_boot_args();
++	sweet_early_mark(47, "configure_misc_apple_boot_args done");
+ 	configure_misc_apple_regs();
++	sweet_early_mark(48, "configure_misc_apple_regs done");
+ 
+@@ -455,4 +460,6 @@
+ 
++	sweet_early_mark(49, "page size selected");
++
+ 	ml_parse_cpu_topology();
+-	sweet_early_mark(3, "ml_parse_cpu_topology done");
++	sweet_early_mark(50, "ml_parse_cpu_topology done");
+ 
