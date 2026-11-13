@@ -1,0 +1,19 @@
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -132,2 +132,10 @@
+ 	__asm__ volatile("dsb sy" ::: "memory");
++	/*
++	 * openplus: stay here. A panic that returns lets the exception path and the
++	 * watchdog reset the board, which clears the panel before anybody reads it.
++	 * Parking the CPU keeps the dump on screen until it is photographed.
++	 */
++	for (;;) {
++		__asm__ volatile("wfe" ::: "memory");
++	}
+ }
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -2197,2 +2197,3 @@
+ 	sweet_early_relocate(SWEET_EARLY_FB_VA);
++	sweet_early_mark(35, "early console relocated");
+ #endif
