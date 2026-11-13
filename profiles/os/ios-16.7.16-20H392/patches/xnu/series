@@ -239,3 +239,6 @@ arch:../../../patches/xnu/kernel-sdk-root.patch
 # step stops with "no such file or directory: bsd/kern/source_pthread_bootstrap.c"
 # (run 42950916039).
 arch:../../../patches/xnu/source-pthread-bootstrap.patch
+# Real software crypto provider; SWEET selection patch must follow both providers.
+arch:../../../patches/xnu/source-corecrypto14-bootstrap.patch
+0208-sweet-crypto-provider-selection.patch

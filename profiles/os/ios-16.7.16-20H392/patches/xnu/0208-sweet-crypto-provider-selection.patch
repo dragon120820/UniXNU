@@ -1,0 +1,30 @@
+diff --git a/osfmk/prng/prng_random.c b/osfmk/prng/prng_random.c
+--- a/osfmk/prng/prng_random.c
++++ b/osfmk/prng/prng_random.c
+@@ -145,7 +145,7 @@
+ 		     .strictFIPS = 0,
+ 	     }};
+ 
+-#if defined(SWEET)
++#if defined(SWEET) && !defined(XNU_SOURCE_CORECRYPTO14)
+ /*
+  * The corecrypto kext normally installs the kernel PRNG. SWEET has no such
+  * kext: use the built-in HMAC-SHA256 DRBG, just as early_random does. A
+@@ -277,7 +277,7 @@ sweet_prng_startup(void)
+ 	kprintf("SWEET PRNG: HMAC-SHA256 registered\n");
+ }
+ STARTUP(EARLY_BOOT, STARTUP_RANK_FIRST, sweet_prng_startup);
+-#endif /* SWEET */
++#endif /* SWEET && !XNU_SOURCE_CORECRYPTO14 */
+ 
+ static void read_erandom(void * buf, size_t nbytes);
+ 
+@@ -588,6 +588,8 @@ source_corecrypto14_bootstrap(void)
+ 	if (PE_parse_boot_argn("fips_mode", &mode, sizeof(mode)) && mode != 0) {
+ 		panic("source corecrypto verification requires complete default POST");
+ 	}
++	/* Initialize the boot seed before the provider consumes and erases it. */
++	(void)early_random();
+ 	info.address = (vm_address_t)&_mh_execute_header;
+ 	source_corecrypto14_status = corecrypto_kext_start(&info, NULL);
+ 	if (source_corecrypto14_status != KERN_SUCCESS) {
