@@ -1,0 +1,16 @@
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -350,2 +350,13 @@
+ 	sweet_early_mark(1, "arm_init entered (MMU on)");
++	/*
++	 * openplus: the platform expert prints a device tree pointer of
++	 * 0xffff0000ffff while DarwinBoot printed a valid one, so print the
++	 * pointer arm_init is actually handed before it is copied.
++	 */
++	sweet_early_printf("ARGS p=%lx dt=%lx len=%lx va=%lx pa=%lx\n",
++	    (uint64_t)(uintptr_t)args,
++	    (uint64_t)(uintptr_t)args->deviceTreeP,
++	    (uint64_t)args->deviceTreeLength,
++	    (uint64_t)args->virtBase,
++	    (uint64_t)args->physBase);
+ 
