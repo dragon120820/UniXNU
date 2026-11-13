@@ -173,6 +173,36 @@ def build_archives(ctx, env):
             raise Error(f'{key}: {value} not found; supply the archive or its build recipe')
 
 
+def validate_platform_records(record, selected):
+    """Refuse stale SDK-derived compile flags before any component replays them."""
+    if not selected or not record.is_file():
+        return
+    if selected not in ('iPhoneOS', 'MacOSX'):
+        raise Error('XNU_KERNEL_PLATFORM must be iPhoneOS or MacOSX')
+    expected = 'XNU_PLATFORM_' + selected
+    for path in record.parents[2].rglob('*.json'):
+        try:
+            item = json.loads(path.read_text().strip().rstrip(','))
+            if not isinstance(item, dict):
+                continue
+            args = item.get('arguments')
+            if args is None and item.get('command'):
+                args = shlex.split(item['command'])
+            if not isinstance(args, list):
+                if path == record:
+                    raise ValueError('missing compile arguments')
+                continue
+            defines = set()
+            for index, arg in enumerate(args):
+                macro = args[index + 1] if arg == '-D' and index + 1 < len(args) else arg[2:] if arg.startswith('-D') else ''
+                if macro.startswith('XNU_PLATFORM_'):
+                    defines.add(macro.split('=', 1)[0])
+            if defines != {expected} and (defines or path == record):
+                raise ValueError(f'platform defines {sorted(defines)}; expected {expected}')
+        except (ValueError, OSError) as exc:
+            raise Error(f'{path}: stale or invalid kernel platform record ({exc}); use a fresh build tree before building archives') from exc
+
+
 def build(ctx, modules):
     log('kernel: XNU')
     script = ctx.tree / 'scripts/build-xnu-4k-baseline.sh'
@@ -202,6 +232,7 @@ def build(ctx, modules):
     # SWEET pass was looked for under the wrong directory.
     machine = env.get('XNU_MACHINE_CONFIG') or 'BCM2837'
     record = ctx.tree / f'build/xnu/ios-obj/DEVELOPMENT_ARM64_{machine}/osfmk/DEVELOPMENT/startup.o.json'
+    validate_platform_records(record, env.get('XNU_KERNEL_PLATFORM'))
     if not record.is_file():
         # The archive builders and the boot progress layer read compile records of the XNU build, which only an earlier
         # pass leaves behind. A first build from scratch therefore runs one pass without them; XNU_BOOTSTRAP makes it
@@ -214,6 +245,7 @@ def build(ctx, modules):
         except Error:
             if not record.is_file():
                 raise
+    validate_platform_records(record, env.get('XNU_KERNEL_PLATFORM'))
     # Revalidate the selected source and regenerate headers on every archive build.
     # A pre-existing directory can belong to a different OS profile/revision.
     if (ctx.tree / 'refer/IOStorageFamily').is_dir():

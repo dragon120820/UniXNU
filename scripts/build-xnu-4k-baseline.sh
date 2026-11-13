@@ -31,6 +31,16 @@ case "${UNIXNU_XNU_TARGET:-ios}" in
   macosx) XNU_TARGET_DEFINE=-DXNU_TARGET_OS_OSX ;;
   *) echo 'UNIXNU_XNU_TARGET must be ios or macosx' >&2; exit 1 ;;
 esac
+# SDKROOT chooses tools/headers, not necessarily the kernel platform policy.
+# Apply an explicit device choice to both exported headers and kernel objects.
+# An unset choice retains the existing SDK-derived behavior for other devices.
+KERNEL_PLATFORM_ARGS=()
+if [ -n "${XNU_KERNEL_PLATFORM:-}" ]; then
+  case "$XNU_KERNEL_PLATFORM" in
+    iPhoneOS|MacOSX) KERNEL_PLATFORM_ARGS+=("PLATFORM=$XNU_KERNEL_PLATFORM") ;;
+    *) echo 'XNU_KERNEL_PLATFORM must be iPhoneOS or MacOSX' >&2; exit 1 ;;
+  esac
+fi
 if [ ! -d refer/xnu/.git ]; then
   git clone --depth 1 --branch "$XNU_TAG" https://github.com/apple-oss-distributions/xnu.git refer/xnu
 fi
@@ -151,14 +161,18 @@ for header in Path('refer/libdispatch/os').glob('*.h'):
     if not target.exists() or target.read_bytes() != result.stdout:
         target.write_bytes(result.stdout)
 PY
-if [ ! -f "$KERNEL_SDKROOT/.xnu-$XNU_VERSION-headers" ]; then
-  make -C .cache/xnu-work installhdrs SDKROOT=macosx ARCH_CONFIGS=ARM64 \
+# One active identity, not separate stale stamps: switching A -> B -> A must
+# re-export the headers rather than trusting A's old marker over B's files.
+HEADER_STAMP="$KERNEL_SDKROOT/.xnu-kernel-header-platform"
+HEADER_ID="$XNU_VERSION:${XNU_KERNEL_PLATFORM:-sdk-default}"
+if [ ! -f "$HEADER_STAMP" ] || [ "$(<"$HEADER_STAMP")" != "$HEADER_ID" ]; then
+  make -C .cache/xnu-work installhdrs SDKROOT=macosx "${KERNEL_PLATFORM_ARGS[@]}" ARCH_CONFIGS=ARM64 \
     MACHINE_CONFIGS="$XNU_MACHINE_CONFIG" KERNEL_CONFIGS=DEVELOPMENT \
     RC_DARWIN_KERNEL_VERSION="$XNU_DARWIN" RC_ProjectSourceVersion="$XNU_VERSION" \
     MAKEJOBS=-j"${JOBS:-4}" OBJROOT="$ROOT/build/xnu/obj" \
     SYMROOT="$ROOT/build/xnu/sym" DSTROOT="$KERNEL_SDKROOT" \
     ${XNU_HOST_MAKE_ARGS[@]+"${XNU_HOST_MAKE_ARGS[@]}"}
-  touch "$KERNEL_SDKROOT/.xnu-$XNU_VERSION-headers"
+  printf '%s\n' "$HEADER_ID" > "$HEADER_STAMP"
 fi
 if [ ! -f "$KERNEL_SDKROOT/usr/local/lib/kernel/libfirehose_kernel.a" ]; then
   bash scripts/build-firehose.sh
@@ -840,7 +854,7 @@ if not stamp.exists() or stamp.read_text() != identity:
     stamp.write_text(identity)
 PY
 EXTRA_CFLAGS="$EXTRA_CFLAGS -DXNU_BOOT_PROGRESS=$BOOT_PROGRESS"
-make -C .cache/xnu-work "${XNU_BUILD_TARGET:-build}" SDKROOT="${XNU_SDKROOT:-iphoneos}" ARCH_CONFIGS=ARM64 \
+make -C .cache/xnu-work "${XNU_BUILD_TARGET:-build}" SDKROOT="${XNU_SDKROOT:-iphoneos}" "${KERNEL_PLATFORM_ARGS[@]}" ARCH_CONFIGS=ARM64 \
   MACHINE_CONFIGS="$XNU_MACHINE_CONFIG" KERNEL_CONFIGS=DEVELOPMENT \
   ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG="$XNU_ARCH_STRING" LARGE_MEMORY_DEFINE=-UARM_LARGE_MEMORY \
   ARM64_LINK_ADDR=0xfffffff007004000 ARM64_PLKSEG_ADDR=0xfffffff004004000 \
