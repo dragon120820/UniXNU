@@ -1,20 +1,16 @@
 --- a/osfmk/arm64/start.s
 +++ b/osfmk/arm64/start.s
-@@ -508,2 +508,10 @@
- .macro SWEET_STAGE_BAR row, colr
-+	/* openplus: one call site sits between `mov x0, x20` and the ret into
-+	 * arm_init, and x20 carries the physical boot_args pointer.  Saving
-+	 * x0-x4 keeps the bars from handing the kernel a framebuffer address
-+	 * (it was printing ARGS p=9dd21300 while DarwinBoot wrote 0x8d240000). */
-+	sub	sp, sp, #48
-+	stp	x0, x1, [sp]
-+	stp	x2, x3, [sp, #16]
-+	str	x4, [sp, #32]
- 	MOV64	x0, (0x9d400000 + (\row) * 4320)
-@@ -520,2 +528,6 @@
- 	dsb	sy
-+	ldp	x0, x1, [sp]
-+	ldp	x2, x3, [sp, #16]
-+	ldr	x4, [sp, #32]
-+	add	sp, sp, #48
- .endm
+@@ -834,6 +834,10 @@
+ 
+-#if defined(SWEET)
+-	SWEET_STAGE_BAR 2152, 0x00ff0000	/* C: about to enter arm_init */
+-#endif
+ 	// Return to arm_init()
++	/*
++	 * openplus: no stage bar here.  SWEET_STAGE_BAR draws through x0, and
++	 * x0 already holds the physical boot_args pointer that arm_init takes
++	 * as its argument; drawing here handed arm_init a framebuffer address
++	 * (ARGS p=9dd21300 instead of DarwinBoot's args@0x8d240000).  Saving
++	 * the registers is not safe this early either, so the bar goes away.
++	 */
+ 	ret
