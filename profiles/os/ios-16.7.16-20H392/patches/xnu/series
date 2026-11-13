@@ -222,6 +222,7 @@
 0200-sweet-arminit-args.patch
 0201-sweet-stage-bar-regs.patch
 0202-sweet-freeze-panic.patch
+0203-sweet-pep-stack.patch
 
 # Three official architecture patches that the community tree still needs.
 # Measured to apply cleanly on top of the community block above.

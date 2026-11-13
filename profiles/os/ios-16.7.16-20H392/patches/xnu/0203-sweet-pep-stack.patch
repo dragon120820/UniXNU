@@ -1,0 +1,13 @@
+--- a/pexpert/arm/pe_init.c
++++ b/pexpert/arm/pe_init.c
+@@ -511,2 +511,10 @@
+ 		sweet_early_mark(43, "pe_init_debug done");
++		{
++			uint64_t pep_sp, pep_fp, pep_ret;
++			__asm__ volatile("mov %0, sp" : "=r" (pep_sp));
++			__asm__ volatile("mov %0, x29" : "=r" (pep_fp));
++			pep_ret = *(uint64_t *)(uintptr_t)(pep_fp + 8);
++			sweet_early_printf("PEP sp=%lx fp=%lx ret=%lx\n",
++			    pep_sp, pep_fp, pep_ret);
++		}
+ 	}
