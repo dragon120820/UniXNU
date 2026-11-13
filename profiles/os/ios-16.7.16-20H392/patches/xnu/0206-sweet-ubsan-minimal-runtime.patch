@@ -1,0 +1,23 @@
+SWEET: link the upstream iPhoneOS minimal UBSan runtime
+
+PLATFORM=iPhoneOS DEVELOPMENT/DEBUG instruments signed integer arithmetic in
+MakeInc.def. SWEET derives its MASTER from MacOSX and omitted both the
+ubsan_minimal group token and CONFIG_UBSAN_MINIMAL declaration. Restore the
+same pairing as MASTER.arm64.iPhoneOS so san/conf/files.arm64 selects the real
+san/memory/ubsan_minimal.c. Keep instrumentation, native handlers, telemetry
+and assertions; do not disable sanitizers or add no-op compatibility stubs.
+RELEASE/KASAN groups are unchanged.
+
+--- a/config/MASTER.arm64.sweet
++++ b/config/MASTER.arm64.sweet
+@@ -81,4 +81,4 @@
+ #  VM_RELEASE =     [ VM_BASE ]
+-#  VM_DEV =         [ VM_BASE dynamic_codesigning pgzalloc ]
+-#  VM_DEBUG =       [ VM_BASE dynamic_codesigning pgzalloc ]
++#  VM_DEV =         [ VM_BASE dynamic_codesigning ubsan_minimal pgzalloc ]
++#  VM_DEBUG =       [ VM_BASE dynamic_codesigning ubsan_minimal pgzalloc ]
+ #  VM_KASAN =       [ VM_BASE dynamic_codesigning config_kasan config_ubsan config_kcov config_ksancov kernel_tbi ]
+@@ -114,2 +114,3 @@
+ options   CONFIG_RESLIDE_SHARED_CACHE		# <reslide_shared_cache>
++options   CONFIG_UBSAN_MINIMAL		# <ubsan_minimal>
+ options   CONFIG_KERNEL_TBI		# <kernel_tbi>
