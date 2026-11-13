@@ -224,6 +224,7 @@
 0202-sweet-freeze-panic.patch
 0203-sweet-pep-stack.patch
 0204-sweet-configure-marks.patch
+0205-sweet-fb-lowglobal-l1.patch
 
 # Three official architecture patches that the community tree still needs.
 # Measured to apply cleanly on top of the community block above.

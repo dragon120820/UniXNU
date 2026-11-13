@@ -1,0 +1,12 @@
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -1831,5 +1831,8 @@
+  * Use the otherwise empty 32MB block above low globals and below gVirtBase
+  * for a Normal-NC framebuffer alias that survives bootstrap TTBR0 teardown.
+  */
+-#define SWEET_EARLY_FB_VA (VM_MIN_KERNEL_ADDRESS + ARM_TT_L2_SIZE)
++/* VM_MIN_KERNEL_ADDRESS can be in a different, unallocated L1 from the
++ * linked kernel. Anchor in the low-globals L1; retain the bounds, table
++ * type and empty-slot assertions below instead of creating a stray table. */
++#define SWEET_EARLY_FB_VA (LOW_GLOBAL_BASE_ADDRESS + ARM_TT_L2_SIZE)
+ 
