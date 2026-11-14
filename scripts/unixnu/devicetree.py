@@ -253,6 +253,15 @@ def hardware_properties(entry, handles, base=0):
         elif key == 'reg':
             pairs = [(physical(entry.parent, address, size) - base, size) for address, size in registers(entry)]
             properties.append((key, b''.join(struct.pack('<QQ', *pair) for pair in pairs)))
+    # IOKit AddPHandle/FindPHandle indexes AAPL,phandle, not the FDT spelling.
+    # Retain the original properties for native consumers and export one LE alias.
+    ids = [entry.scalar(key) for key in ('phandle', 'linux,phandle') if key in entry.properties]
+    if ids:
+        if len(set(ids)) != 1 or not 0 < ids[0] < 0xffffffff:
+            raise Error(f'{entry.name}: conflicting or invalid hardware phandle')
+        if 'AAPL,phandle' in entry.properties and entry.scalar('AAPL,phandle') != ids[0]:
+            raise Error(f'{entry.name}: conflicting AAPL,phandle')
+        properties.append(('AAPL,phandle', struct.pack('<I', ids[0])))
     return properties
 
 
