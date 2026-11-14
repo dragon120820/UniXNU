@@ -254,3 +254,4 @@ arch:../../../patches/xnu/source-corecrypto14-bootstrap.patch
 0219-sweet-owner-development-supplier.patch
 0220-sweet-owner-mounted-root-bridge.patch
 0221-sweet-owner-data-ramdisk.patch
+0222-sweet-owner-preboot-ramdisk.patch

@@ -193,6 +193,7 @@ if [ "$SWEET_MERKLE_MODE" = 1 ]; then
   EXTRA_MAKE_ARGS+=("sweet_ufs.o_CFLAGS_ADD=-DSWEET_MERKLE_ROOT=1")
   EXTRA_MAKE_ARGS+=("sweet_owner_policy.o_CFLAGS_ADD=-DSWEET_MERKLE_ROOT=1")
   EXTRA_MAKE_ARGS+=("sweet_owner_data.o_CFLAGS_ADD=-DSWEET_MERKLE_ROOT=1")
+  EXTRA_MAKE_ARGS+=("sweet_owner_preboot.o_CFLAGS_ADD=-DSWEET_MERKLE_ROOT=1")
   EXTRA_MAKE_ARGS+=("vfs_syscalls.o_CFLAGS_ADD=-DSWEET_MERKLE_ROOT=1")
   SWEET_OWNER_BSD_FLAGS=-DSWEET_MERKLE_ROOT=1
   EXTRA_MAKE_ARGS+=("sweet_owner_publish.cpo_CFLAGS_ADD=-DSWEET_MERKLE_ROOT=1")
@@ -234,6 +235,7 @@ if [ "$XNU_MACHINE_CONFIG" = SWEET ]; then
   if { [ -f "$SWEET_MODE_DIR/bsd/DEVELOPMENT/sweet_ufs.o" ] || \
        [ -f "$SWEET_MODE_DIR/bsd/DEVELOPMENT/sweet_owner_policy.o" ] || \
        [ -f "$SWEET_MODE_DIR/bsd/DEVELOPMENT/sweet_owner_data.o" ] || \
+       [ -f "$SWEET_MODE_DIR/bsd/DEVELOPMENT/sweet_owner_preboot.o" ] || \
        [ -f "$SWEET_MODE_DIR/bsd/DEVELOPMENT/vfs_syscalls.o" ] || \
        [ -f "$SWEET_MODE_DIR/bsd/DEVELOPMENT/bsd_init.o" ] || \
        [ -f "$SWEET_MODE_DIR/bsd/DEVELOPMENT/sweet_owner_publish.cpo" ] || \

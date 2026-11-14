@@ -1,0 +1,707 @@
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -1044,5 +1044,9 @@
+         extern int sweet_owner_publish_mounted_root(void);
+         extern int sweet_owner_prepare_data(void);
++        extern int sweet_owner_prepare_preboot(void);
+         int owner_error = sweet_owner_prepare_data();
++        if (owner_error == 0) {
++            owner_error = sweet_owner_prepare_preboot();
++        }
+         if (owner_error == 0) {
+             owner_error = sweet_owner_publish_mounted_root();
+diff --git a/bsd/conf/files b/bsd/conf/files
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -111,4 +111,5 @@
+ bsd/dev/sweet_owner_policy.c		standard
+ bsd/dev/sweet_owner_data.c		standard
++bsd/dev/sweet_owner_preboot.c		standard
+ bsd/dev/sweet_owner_publish.cpp		standard
+ bsd/dev/sweet_sample.c			standard
+diff --git a/bsd/vfs/vfs_syscalls.c b/bsd/vfs/vfs_syscalls.c
+--- a/bsd/vfs/vfs_syscalls.c
++++ b/bsd/vfs/vfs_syscalls.c
+@@ -286,4 +286,11 @@
+     KERNEL_MOUNT_DEVFS | KERNEL_MOUNT_FMOUNT | KERNEL_MOUNT_KMOUNT)) == 0,
+     "sweet mount internal flag collision");
++#define SWEET_KERNEL_MOUNT_PREBOOT 0x40000000U
++_Static_assert((SWEET_KERNEL_MOUNT_PREBOOT & (SWEET_KERNEL_MOUNT_DATA |
++    KERNEL_MOUNT_NOAUTH | KERNEL_MOUNT_PERMIT_UNMOUNT | KERNEL_MOUNT_SNAPSHOT |
++    KERNEL_MOUNT_VOLBYROLE_MASK | KERNEL_MOUNT_BASESYSTEMROOT |
++    KERNEL_MOUNT_DEVFS | KERNEL_MOUNT_FMOUNT | KERNEL_MOUNT_KMOUNT)) == 0,
++    "sweet preboot internal flag collision");
++__private_extern__ int sweet_kernel_mount_preboot(dev_t expected_device);
+ extern dev_t mdevlookup(int devid);
+ __private_extern__ int sweet_kernel_mount_data(dev_t expected_device);
+@@ -356,4 +363,71 @@
+ 	return error;
+ }
++/* Fixed md14 /private/preboot, same normal mount_common authorization.
++ * Caller serializes before init and retains md14 storage; no retry on failure.
++ */
++__private_extern__
++int
++sweet_kernel_mount_preboot(dev_t expected_device)
++{
++	vfs_context_t ctx = vfs_context_kernel();
++	struct nameidata nd, verify_nd;
++	vnode_t vp, pvp, rootvp;
++	mount_t mp;
++	int error;
++	boolean_t verified;
++
++	if (expected_device == (dev_t)-1 ||
++	    expected_device != mdevlookup(14)) {
++		return ENXIO;
++	}
++	NDINIT(&nd, LOOKUP, OP_MOUNT, FOLLOW | WANTPARENT,
++	    UIO_SYSSPACE, CAST_USER_ADDR_T("/private/preboot"), ctx);
++	nd.ni_flag |= NAMEI_NOFOLLOW_ANY;
++	error = namei(&nd);
++	if (error != 0) {
++		return error;
++	}
++	vp = nd.ni_vp;
++	pvp = nd.ni_dvp;
++	if (vp->v_type != VDIR) {
++		error = ENOTDIR;
++	} else if (vp->v_mount != rootvnode->v_mount ||
++	    (vp->v_flag & (VROOT | VMOUNT)) ||
++	    vp->v_mountedhere != NULL) {
++		error = EBUSY;
++	} else {
++		/* Fixed fresh RW HFS mount; filesystem-specific data stays NULL. */
++		error = mount_common("hfs", pvp, vp, &nd.ni_cnd, USER_ADDR_NULL,
++		    0, KERNEL_MOUNT_KMOUNT | SWEET_KERNEL_MOUNT_PREBOOT, NULL, ctx);
++	}
++	if (error == 0) {
++		/* Published mount: a failed invariant is fatal, never retry/fallback. */
++		mp = vp->v_mountedhere;
++		verified = FALSE;
++		NDINIT(&verify_nd, LOOKUP, OP_LOOKUP, FOLLOW,
++		    UIO_SYSSPACE, CAST_USER_ADDR_T("/private/preboot"), ctx);
++		verify_nd.ni_flag |= NAMEI_NOFOLLOW_ANY;
++		if (namei(&verify_nd) == 0) {
++			rootvp = verify_nd.ni_vp;
++			verified = mp != NULL && rootvp->v_type == VDIR &&
++			    rootvp->v_mountedhere == NULL && rootvp->v_mount == mp &&
++			    (rootvp->v_flag & VROOT) && mp->mnt_vnodecovered == vp &&
++			    strcmp(mp->mnt_vtable->vfc_name, "hfs") == 0 &&
++			    !(mp->mnt_flag & MNT_RDONLY) && mp->mnt_devvp != NULL &&
++			    mp->mnt_devvp->v_type == VBLK &&
++			    mp->mnt_devvp->v_rdev == expected_device &&
++			    mdevlookup(14) == expected_device;
++			vnode_put(rootvp);
++			nameidone(&verify_nd);
++		}
++		if (!verified) {
++			panic("sweet_kernel_mount_preboot: published mount invariant failed");
++		}
++	}
++	vnode_put(vp);
++	vnode_put(pvp);
++	nameidone(&nd);
++	return error;
++}
+ #endif /* SWEET_MERKLE_ROOT */
+ /*
+@@ -381,6 +455,6 @@
+ 	kern_flags &= KERNEL_MOUNT_SANITIZE_MASK;
+ #if SWEET_MERKLE_ROOT
+-	/* Only sweet_kernel_mount_data may create this capability. */
+-	kern_flags &= ~SWEET_KERNEL_MOUNT_DATA;
++	/* Only the fixed private Data/Preboot helpers may create these capabilities. */
++	kern_flags &= ~(SWEET_KERNEL_MOUNT_DATA | SWEET_KERNEL_MOUNT_PREBOOT);
+ #endif
+ 
+@@ -1122,4 +1196,12 @@
+ 		}
+ 	}
++	if (internal_flags & SWEET_KERNEL_MOUNT_PREBOOT) {
++		if (internal_flags != (KERNEL_MOUNT_KMOUNT | SWEET_KERNEL_MOUNT_PREBOOT) ||
++		    flags != 0 || fsmountargs != USER_ADDR_NULL || labelstr != NULL ||
++		    ctx != vfs_context_kernel() || strcmp(fstypename, "hfs") != 0 ||
++		    mdevlookup(14) == (dev_t)-1) {
++			return EINVAL;
++		}
++	}
+ #endif
+ #if CONFIG_ROSV_STARTUP || CONFIG_MOUNT_VM || CONFIG_BASESYSTEMROOT
+@@ -1262,5 +1344,5 @@
+ 
+ #if SWEET_MERKLE_ROOT
+-	if ((internal_flags & SWEET_KERNEL_MOUNT_DATA) &&
++	if ((internal_flags & (SWEET_KERNEL_MOUNT_DATA | SWEET_KERNEL_MOUNT_PREBOOT)) &&
+ 	    !(vfsp->vfc_vfsflags & VFC_VFSLOCALARGS)) {
+ 		error = EINVAL;
+@@ -1275,5 +1357,5 @@
+ 	    ((internal_flags & KERNEL_MOUNT_VOLBYROLE_MASK) == 0) &&
+ #if SWEET_MERKLE_ROOT
+-	    ((internal_flags & SWEET_KERNEL_MOUNT_DATA) == 0) &&
++	    ((internal_flags & (SWEET_KERNEL_MOUNT_DATA | SWEET_KERNEL_MOUNT_PREBOOT)) == 0) &&
+ #endif
+ 	    ((internal_flags & KERNEL_MOUNT_BASESYSTEMROOT) == 0)) {
+@@ -1418,4 +1500,9 @@
+ 			fsmountargs = USER_ADDR_NULL;
+ 		}
++		if (internal_flags & SWEET_KERNEL_MOUNT_PREBOOT) {
++			devpath = CAST_USER_ADDR_T("/dev/md14");
++			do_copyin_devpath = false;
++			fsmountargs = USER_ADDR_NULL;
++		}
+ #endif
+ #if CONFIG_BASESYSTEMROOT
+@@ -1464,5 +1551,5 @@
+ 			enum uio_seg seg = UIO_USERSPACE;
+ #if SWEET_MERKLE_ROOT
+-			if (internal_flags & SWEET_KERNEL_MOUNT_DATA) {
++			if (internal_flags & (SWEET_KERNEL_MOUNT_DATA | SWEET_KERNEL_MOUNT_PREBOOT)) {
+ 				seg = UIO_SYSSPACE;
+ 			}
+@@ -1476,5 +1563,5 @@
+ 			NDINIT(&nd, LOOKUP, OP_MOUNT, FOLLOW, seg, devpath, ctx);
+ #if SWEET_MERKLE_ROOT
+-			if (internal_flags & SWEET_KERNEL_MOUNT_DATA) {
++			if (internal_flags & (SWEET_KERNEL_MOUNT_DATA | SWEET_KERNEL_MOUNT_PREBOOT)) {
+ 				nd.ni_flag |= NAMEI_NOFOLLOW_ANY;
+ 			}
+@@ -1496,4 +1583,9 @@
+ 			if ((internal_flags & SWEET_KERNEL_MOUNT_DATA) &&
+ 			    devvp->v_rdev != mdevlookup(15)) {
++				error = ENXIO;
++				goto out2;
++			}
++			if ((internal_flags & SWEET_KERNEL_MOUNT_PREBOOT) &&
++			    devvp->v_rdev != mdevlookup(14)) {
+ 				error = ENXIO;
+ 				goto out2;
+@@ -9959,4 +10051,351 @@
+ 	return error;
+ }
++#if SWEET_MERKLE_ROOT
++static int
++sweet_preboot_mkdir1at(vfs_context_t ctx, user_addr_t path, struct vnode_attr *vap, int fd,
++    enum uio_seg segflg)
++{
++	vnode_t vp, dvp;
++	int error;
++	int update_flags = 0;
++	int batched;
++	struct nameidata nd;
++
++	AUDIT_ARG(mode, vap->va_mode);
++	NDINIT(&nd, CREATE, OP_MKDIR, LOCKPARENT | AUDITVNPATH1, segflg,
++	    path, ctx);
++	nd.ni_cnd.cn_flags |= WILLBEDIR;
++	nd.ni_flag = NAMEI_COMPOUNDMKDIR | NAMEI_NOFOLLOW_ANY;
++
++continue_lookup:
++	error = nameiat(&nd, fd);
++	if (error) {
++		return error;
++	}
++	dvp = nd.ni_dvp;
++	vp = nd.ni_vp;
++
++	if (vp != NULL) {
++		error = EEXIST;
++		goto out;
++	}
++
++	batched = vnode_compound_mkdir_available(dvp);
++
++	VATTR_SET(vap, va_type, VDIR);
++
++	/*
++	 * XXX
++	 * Don't authorize in VFS for compound VNOP.... mkdir -p today assumes that it will
++	 * only get EXISTS or EISDIR for existing path components, and not that it could see
++	 * EACCESS/EPERM--so if we authorize for mkdir on "/" for "mkdir -p /tmp/foo/bar/baz"
++	 * it will fail in a spurious  manner.  Need to figure out if this is valid behavior.
++	 */
++	if ((error = vn_authorize_mkdir(dvp, &nd.ni_cnd, vap, ctx, NULL)) != 0) {
++		if (error == EACCES || error == EPERM) {
++			int error2;
++
++			nameidone(&nd);
++			vnode_put(dvp);
++			dvp = NULLVP;
++
++			/*
++			 * Try a lookup without "NAMEI_COMPOUNDVNOP" to make sure we return EEXIST
++			 * rather than EACCESS if the target exists.
++			 */
++			NDINIT(&nd, LOOKUP, OP_MKDIR, AUDITVNPATH1, segflg,
++			    path, ctx);
++			nd.ni_flag |= NAMEI_NOFOLLOW_ANY;
++			error2 = nameiat(&nd, fd);
++			if (error2) {
++				goto out;
++			} else {
++				vp = nd.ni_vp;
++				error = EEXIST;
++				goto out;
++			}
++		}
++
++		goto out;
++	}
++
++#if CONFIG_FILE_LEASES
++	vnode_breakdirlease(dvp, false, O_WRONLY);
++#endif
++
++	/*
++	 * make the directory
++	 */
++	if ((error = vn_create(dvp, &vp, &nd, vap, 0, 0, NULL, ctx)) != 0) {
++		if (error == EKEEPLOOKING) {
++			nd.ni_vp = vp;
++			goto continue_lookup;
++		}
++
++		goto out;
++	}
++
++	// Make sure the name & parent pointers are hooked up
++	if (vp->v_name == NULL) {
++		update_flags |= VNODE_UPDATE_NAME;
++	}
++	if (vp->v_parent == NULLVP) {
++		update_flags |= VNODE_UPDATE_PARENT;
++	}
++
++	if (update_flags) {
++		vnode_update_identity(vp, dvp, nd.ni_cnd.cn_nameptr, nd.ni_cnd.cn_namelen, nd.ni_cnd.cn_hash, update_flags);
++	}
++
++#if CONFIG_FSE
++	add_fsevent(FSE_CREATE_DIR, ctx, FSE_ARG_VNODE, vp, FSE_ARG_DONE);
++#endif
++
++out:
++	/*
++	 * nameidone has to happen before we vnode_put(dvp)
++	 * since it may need to release the fs_nodelock on the dvp
++	 */
++	nameidone(&nd);
++
++	if (vp) {
++		vnode_put(vp);
++	}
++	if (dvp) {
++		vnode_put(dvp);
++	}
++
++	return error;
++}
++/* Private fixed-path boot operation, not a syscall and not an owner publisher.
++ * Caller MUST serialize before init: no namespace/device mutation, remount,
++ * pivot or unmount, and keep md14 storage alive. Any nonzero return is fatal
++ * to the caller: mkdir/rename/mtime effects are NOT rolled back. The current
++ * RO root must already have been authenticated by the caller's boot policy.
++ */
++__private_extern__ int sweet_kernel_prepare_preboot(dev_t expected_device,
++    const uint8_t namespace48[48]);
++
++static int
++sweet_preboot_lookup(const char *path, vnode_t *vpp, vfs_context_t ctx)
++{
++	struct nameidata nd;
++	int error;
++
++	*vpp = NULLVP;
++	NDINIT(&nd, LOOKUP, OP_LOOKUP, NOFOLLOW, UIO_SYSSPACE,
++	    CAST_USER_ADDR_T(path), ctx);
++	nd.ni_flag |= NAMEI_NOFOLLOW_ANY;
++	error = namei(&nd);
++	if (error != 0) {
++		return error;
++	}
++	*vpp = nd.ni_vp; /* Transfer exactly one iocount, not a usecount. */
++	nameidone(&nd);
++	return 0;
++}
++
++static boolean_t
++sweet_preboot_root_ok(vnode_t vp, mount_t mp, dev_t expected_device)
++{
++	return expected_device != (dev_t)-1 && mdevlookup(14) == expected_device &&
++	       vp->v_type == VDIR && (vp->v_flag & VROOT) &&
++	       vp->v_mountedhere == NULL && vp->v_mount == mp &&
++	       mp != NULL && !(mp->mnt_flag & MNT_RDONLY) &&
++	       strcmp(mp->mnt_vtable->vfc_name, "hfs") == 0 &&
++	       mp->mnt_devvp != NULL && mp->mnt_devvp->v_type == VBLK &&
++	       mp->mnt_devvp->v_rdev == expected_device &&
++	       mp->mnt_vnodecovered != NULL &&
++	       mp->mnt_vnodecovered->v_type == VDIR &&
++	       !(mp->mnt_vnodecovered->v_flag & VROOT) &&
++	       mp->mnt_vnodecovered->v_mountedhere == mp;
++}
++
++static int
++sweet_preboot_check_link(vnode_t linkvp, vfs_context_t ctx)
++{
++	static const char target[] = "/usr/standalone/owner/Cryptexes";
++	char bytes[sizeof(target)];
++	UIO_STACKBUF(uio_buf, 1);
++	uio_t uio;
++	int error = 0;
++	size_t length;
++
++	if (linkvp->v_type != VLNK || linkvp->v_mountedhere != NULL ||
++	    (linkvp->v_flag & VROOT)) {
++		return EINVAL;
++	}
++	/* Same MAC + vnode_authorize + VNOP_READLINK sequence as the real TU.
++	 * Stack-backed uio owns no heap allocation. One spare byte detects longer
++	 * targets and stored trailing NUL. Never follow to authenticate a source. */
++	uio = uio_createwithbuffer(1, 0, UIO_SYSSPACE, UIO_READ,
++	    &uio_buf[0], sizeof(uio_buf));
++	if (uio == NULL) {
++		return ENOMEM;
++	}
++	error = uio_addiov(uio, CAST_USER_ADDR_T(bytes), sizeof(bytes));
++	if (error != 0) {
++		return error;
++	}
++#if CONFIG_MACF
++	error = mac_vnode_check_readlink(ctx, linkvp);
++#endif
++	if (error == 0) {
++		error = vnode_authorize(linkvp, NULL, KAUTH_VNODE_READ_DATA, ctx);
++	}
++	if (error == 0) {
++		error = VNOP_READLINK(linkvp, uio, ctx);
++	}
++	length = sizeof(bytes) - uio_resid(uio);
++	if (error == 0 && (length != sizeof(target) - 1 ||
++	    memcmp(bytes, target, sizeof(target) - 1) != 0)) {
++		error = EINVAL;
++	}
++	return error;
++}
++
++static int
++sweet_preboot_newdir(const char *path, mount_t mp, vfs_context_t ctx)
++{
++	struct vnode_attr va;
++	vnode_t vp = NULLVP;
++	int error;
++
++	VATTR_INIT(&va);
++	VATTR_SET(&va, va_mode, 0755);
++	VATTR_SET(&va, va_uid, 0);
++	VATTR_SET(&va, va_gid, 0);
++	error = sweet_preboot_mkdir1at(ctx, CAST_USER_ADDR_T(path), &va,
++	    AT_FDCWD, UIO_SYSSPACE);
++	if (error != 0) {
++		return error; /* EEXIST is deliberately fatal, never mkdir -p. */
++	}
++	error = sweet_preboot_lookup(path, &vp, ctx);
++	if (error != 0) {
++		return error;
++	}
++	if (vp->v_type != VDIR || vp->v_mount != mp ||
++	    (vp->v_flag & VROOT) || vp->v_mountedhere != NULL) {
++		error = EINVAL;
++		goto out;
++	}
++	VATTR_INIT(&va);
++	VATTR_WANTED(&va, va_mode);
++	VATTR_WANTED(&va, va_uid);
++	VATTR_WANTED(&va, va_gid);
++	error = vnode_getattr(vp, &va, ctx);
++	if (error == 0 && (!VATTR_IS_SUPPORTED(&va, va_mode) ||
++	    !VATTR_IS_SUPPORTED(&va, va_uid) || !VATTR_IS_SUPPORTED(&va, va_gid) ||
++	    (va.va_mode & ALLPERMS) != 0755 || va.va_uid != 0 || va.va_gid != 0)) {
++		error = EINVAL;
++	}
++out:
++	vnode_put(vp);
++	return error;
++}
++
++__private_extern__
++int
++sweet_kernel_prepare_preboot(dev_t expected_device,
++    const uint8_t namespace48[48])
++{
++	static const char hex[] = "0123456789ABCDEF";
++	static const char * const suffixes[] = { "", "/usr", "/usr/standalone" };
++	vfs_context_t ctx = vfs_context_kernel();
++	vnode_t root = NULLVP, payload = NULLVP, link = NULLVP;
++	vnode_t ro_root = NULLVP, ro_target = NULLVP, check = NULLVP;
++	mount_t mp = NULL;
++	char ns[97], path[192], destination[192];
++	int error, n;
++	unsigned int i;
++
++	if (namespace48 == NULL || expected_device == (dev_t)-1 ||
++	    mdevlookup(14) != expected_device) {
++		return EINVAL;
++	}
++	for (i = 0; i < 48; i++) {
++		ns[2 * i] = hex[namespace48[i] >> 4];
++		ns[2 * i + 1] = hex[namespace48[i] & 15];
++	}
++	ns[96] = '\0';
++#define SWEET_PB_LOOKUP(p, v) do { \
++	error = sweet_preboot_lookup((p), &(v), ctx); \
++	if (error != 0) { goto out; } \
++} while (0)
++#define SWEET_PB_REQUIRE(x) do { \
++	if (!(x)) { error = EINVAL; goto out; } \
++} while (0)
++	SWEET_PB_LOOKUP("/private/preboot", root);
++	mp = root->v_mount;
++	SWEET_PB_REQUIRE(sweet_preboot_root_ok(root, mp, expected_device));
++	SWEET_PB_LOOKUP("/private/preboot/payload", payload);
++	/* NOFOLLOW_ANY alone is not proof about the final component. */
++	SWEET_PB_REQUIRE(payload->v_type == VDIR && payload->v_mount == mp &&
++	    !(payload->v_flag & VROOT) && payload->v_mountedhere == NULL);
++	SWEET_PB_LOOKUP("/", ro_root);
++	SWEET_PB_REQUIRE(ro_root == rootvnode && ro_root->v_type == VDIR &&
++	    (ro_root->v_flag & VROOT) && ro_root->v_mountedhere == NULL &&
++	    ro_root->v_mount != mp && (ro_root->v_mount->mnt_flag & MNT_RDONLY));
++	SWEET_PB_LOOKUP("/usr/standalone/owner/Cryptexes", ro_target);
++	SWEET_PB_REQUIRE(ro_target->v_type == VDIR &&
++	    ro_target->v_mount == ro_root->v_mount &&
++	    !(ro_target->v_flag & VROOT) && ro_target->v_mountedhere == NULL);
++	SWEET_PB_LOOKUP("/private/preboot/Cryptexes", link);
++	SWEET_PB_REQUIRE(link->v_mount == mp);
++	error = sweet_preboot_check_link(link, ctx);
++	if (error != 0) { goto out; }
++	for (i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); i++) {
++		n = snprintf(path, sizeof(path), "/private/preboot/%s%s", ns, suffixes[i]);
++		SWEET_PB_REQUIRE(n > 0 && (size_t)n < sizeof(path));
++		error = sweet_preboot_newdir(path, mp, ctx);
++		if (error != 0) { goto out; }
++	}
++	n = snprintf(destination, sizeof(destination),
++	    "/private/preboot/%s/usr/standalone/firmware", ns);
++	SWEET_PB_REQUIRE(n > 0 && (size_t)n < sizeof(destination));
++	error = renameat_internal(ctx, AT_FDCWD,
++	    CAST_USER_ADDR_T("/private/preboot/payload"), AT_FDCWD,
++	    CAST_USER_ADDR_T(destination), UIO_SYSSPACE,
++	    RENAME_EXCL | RENAME_NOFOLLOW_ANY);
++	if (error != 0) { goto out; }
++	SWEET_PB_LOOKUP(destination, check);
++	SWEET_PB_REQUIRE(check == payload && check->v_type == VDIR &&
++	    check->v_mount == mp && !(check->v_flag & VROOT) &&
++	    check->v_mountedhere == NULL);
++	vnode_put(check); check = NULLVP;
++	error = sweet_preboot_lookup("/private/preboot/payload", &check, ctx);
++	if (error != ENOENT) {
++		if (error == 0) { error = EEXIST; }
++		goto out;
++	}
++	SWEET_PB_LOOKUP("/private/preboot", check);
++	SWEET_PB_REQUIRE(check == root && sweet_preboot_root_ok(root, mp, expected_device));
++	vnode_put(check); check = NULLVP;
++	SWEET_PB_LOOKUP("/private/preboot/Cryptexes", check);
++	SWEET_PB_REQUIRE(check == link && check->v_mount == mp);
++	error = sweet_preboot_check_link(check, ctx);
++	if (error != 0) { goto out; }
++	vnode_put(check); check = NULLVP;
++	SWEET_PB_LOOKUP("/", check);
++	SWEET_PB_REQUIRE(check == ro_root && check == rootvnode &&
++	    (check->v_mount->mnt_flag & MNT_RDONLY));
++	vnode_put(check); check = NULLVP;
++	SWEET_PB_LOOKUP("/usr/standalone/owner/Cryptexes", check);
++	SWEET_PB_REQUIRE(check == ro_target && check->v_type == VDIR &&
++	    check->v_mount == ro_root->v_mount && check->v_mountedhere == NULL &&
++	    !(check->v_flag & VROOT));
++	error = 0;
++out:
++	if (check != NULLVP) { vnode_put(check); }
++	if (ro_target != NULLVP) { vnode_put(ro_target); }
++	if (ro_root != NULLVP) { vnode_put(ro_root); }
++	if (link != NULLVP) { vnode_put(link); }
++	if (payload != NULLVP) { vnode_put(payload); }
++	if (root != NULLVP) { vnode_put(root); }
++#undef SWEET_PB_REQUIRE
++#undef SWEET_PB_LOOKUP
++	return error;
++}
++#endif /* SWEET_MERKLE_ROOT */
+ 
+ /*
+diff --git a/bsd/dev/sweet_owner_material.h b/bsd/dev/sweet_owner_material.h
+--- a/bsd/dev/sweet_owner_material.h
++++ b/bsd/dev/sweet_owner_material.h
+@@ -1,5 +1,5 @@
+ /* GENERATED: explicit source-owned development anchor, NOT Apple personalization. */
+-SECURITY_READ_ONLY_LATE(static uint8_t) owner_envelope[544] = {0x56,0x52,0x4f,0x4f,0x54,0x30,0x32,0x00,0x02,0x00,0x00,0x00,0xa0,0x00,0x00,0x00,0x00,0x10,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x04,0x00,0x00,0x00,0x00,0x00,0x40,0x00,0x00,0x00,0x00,0x00,0xa7,0x1d,0xba,0x82,0x65,0x91,0x31,0xcc,0x88,0x47,0x72,0xc2,0x91,0xe0,0x39,0x49,0x06,0x09,0xcc,0x14,0xd1,0xe4,0x4b,0x70,0xd2,0x8f,0x0d,0xd3,0x17,0x09,0x46,0xcc,0x69,0x4e,0x17,0xc4,0x4f,0xf1,0x14,0x71,0xd9,0x08,0x9b,0x62,0x14,0x51,0xb3,0x5a,0x4f,0x39,0x28,0xc1,0x24,0x82,0xaf,0xa1,0x24,0x2c,0x12,0xeb,0x34,0x96,0xec,0x12,0x89,0xbb,0x93,0x0c,0xbe,0x3c,0x9d,0x73,0xb7,0x69,0xa8,0x40,0x78,0xc6,0xf2,0x22,0xf7,0x2b,0xdd,0xfd,0xe1,0x9a,0xe7,0x85,0xa6,0x8d,0x2e,0xec,0xb3,0x58,0x03,0xb0,0x76,0x78,0x5e,0xa4,0x1c,0x9b,0x06,0xfe,0x0a,0x11,0x28,0xa2,0xe4,0xbc,0x2a,0x9d,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x55,0xd5,0x1b,0xb9,0xd5,0x14,0x75,0x2f,0x27,0xb7,0x81,0xc7,0x4c,0x6c,0xbd,0x0d,0xac,0x24,0xd9,0x41,0xc6,0x75,0x75,0x14,0x5f,0x04,0x47,0x27,0xb2,0x36,0x05,0xf3,0xd3,0x8c,0xd1,0xc3,0xad,0x75,0x1d,0xf6,0xfe,0x0c,0x8a,0x6f,0x9f,0xb2,0xc0,0x72,0x75,0x83,0x1d,0xb2,0x52,0x22,0x92,0x76,0xa7,0xd6,0xec,0x01,0xa7,0xf9,0x53,0x13,0xfa,0x9c,0x37,0x5e,0x5c,0x70,0x37,0x62,0x62,0xdd,0xfc,0x6a,0x2b,0x24,0xd2,0x02,0x16,0x79,0x3e,0x5e,0x09,0x5a,0x5a,0xd6,0xea,0x09,0x79,0x6d,0xfc,0xa2,0x8b,0x5a,0xec,0x9b,0xa8,0x81,0xb3,0x82,0x53,0xff,0x30,0xb7,0x11,0xf4,0x80,0x2e,0x88,0x48,0x1e,0x4c,0x9c,0x89,0x47,0xd6,0xd0,0x99,0xd5,0x59,0x09,0x57,0x1e,0x30,0x55,0x10,0x37,0x45,0x1c,0xb9,0x71,0xa7,0x72,0x99,0x19,0x37,0x86,0xf9,0xee,0xdc,0x77,0xbf,0xb7,0x65,0x8a,0xf6,0x9a,0x49,0xcd,0x3c,0xae,0xb6,0xe6,0x58,0xac,0x59,0xc9,0xaa,0x0b,0x6e,0x9d,0xb7,0x51,0xec,0x84,0xc4,0x56,0x30,0x94,0x2a,0x26,0xaa,0x63,0xeb,0xe4,0x15,0xaa,0xf7,0x16,0x52,0x42,0x96,0x78,0x6e,0x2c,0x7e,0xb1,0x0e,0xdb,0x2c,0x09,0xd9,0xf4,0x85,0x8c,0x0c,0x0c,0x65,0x62,0x69,0xf4,0x43,0x10,0xd6,0x1d,0x77,0xaf,0xea,0xc7,0xee,0xb4,0xe8,0x12,0xa8,0x47,0xc2,0xfa,0xc0,0xb8,0x6c,0x9c,0x03,0x53,0xcd,0xd8,0x0f,0x44,0x9e,0xf9,0x8b,0xde,0xbb,0xf4,0x00,0xb2,0xae,0xb7,0xb3,0x9a,0x28,0x3a,0x77,0xce,0x0b,0xf5,0x29,0x42,0xad,0x8b,0xa7,0x12,0x3e,0x3f,0x74,0x89,0x13,0x93,0x76,0x30,0x27,0xba,0x14,0x84,0x82,0x86,0xae,0x0a,0x00,0xb5,0xe8,0x08,0xab,0x74,0xf7,0xa0,0x4c,0x77,0x78,0xd1,0x2f,0xeb,0x4f,0x44,0xa6,0x7b,0xa5,0xc2,0x72,0x91,0xd9,0x4f,0x08,0x1e,0xb4,0x61,0x64,0x84,0xed,0x4d,0x6d,0x73,0x17,0x50,0x94,0x3c,0x51,0xc3,0xdd,0x29,0x8a,0x53,0x40,0x25,0x7c,0x3e,0xc7,0xda,0xd4,0xda,0xa4,0xd6,0x29,0xfa,0x78,0xb1,0x24,0x26,0xa0,0xf4,0xe3,0x9c,0x3b,0xc8,0x4a,0x74,0x05,0x5a,0x14,0xd6,0x3f,0x4d,0xbb,0x76,0xa6,0x2a,0x63,0x27,0xaa,0x84,0x80,0x4a,0x77,0x87,0xee,0x24,0x11,0x17,0x22,0x86,0xd7,0xce,0xa4,0x33,0xa8,0xdd,0x97,0x90,0x08,0x6d,0xeb,0xc8,0x5b,0x64,0x1d,0x04,0x1e,0x83,0x35,0x14,0xfa,0x3d,0xca};
+-SECURITY_READ_ONLY_LATE(static uint8_t) owner_namespace[48] = {0xf3,0xba,0x21,0xb6,0x4f,0x1f,0xb4,0x76,0x21,0xa5,0x37,0x9c,0xa7,0xa9,0xff,0xe0,0x72,0x03,0x2a,0x2a,0x0c,0x91,0x9b,0xdc,0x18,0xdb,0xf4,0x51,0xa3,0xa7,0xbc,0xac,0xa7,0x40,0xee,0xa6,0x4a,0x84,0xde,0xe2,0xd0,0x76,0x94,0xcb,0x25,0x22,0xf4,0xdb};
++SECURITY_READ_ONLY_LATE(static uint8_t) owner_envelope[544] = {0x56,0x52,0x4f,0x4f,0x54,0x30,0x32,0x00,0x02,0x00,0x00,0x00,0xa0,0x00,0x00,0x00,0x00,0x10,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x04,0x00,0x00,0x00,0x00,0x00,0x40,0x00,0x00,0x00,0x00,0x00,0xa7,0x1d,0xba,0x82,0x65,0x91,0x31,0xcc,0x88,0x47,0x72,0xc2,0x91,0xe0,0x39,0x49,0x84,0xd5,0x53,0x0e,0xe6,0xe0,0xf6,0x2a,0x8f,0xbe,0x86,0x42,0xf4,0xe6,0xba,0xfd,0xc7,0xcf,0xb1,0x49,0x10,0x74,0x87,0x5b,0xa0,0xb8,0x12,0xd7,0x4e,0xac,0x24,0xde,0x4b,0x3f,0x59,0xd5,0x8e,0x7f,0x64,0x8e,0xaf,0x51,0x77,0xbe,0x13,0x7e,0x3d,0xdd,0x45,0xca,0x99,0x53,0x9d,0xda,0x2b,0x66,0xd0,0xe9,0xb2,0x9e,0x69,0x42,0xce,0x43,0xf7,0x2b,0xdd,0xfd,0xe1,0x9a,0xe7,0x85,0xa6,0x8d,0x2e,0xec,0xb3,0x58,0x03,0xb0,0x76,0x78,0x5e,0xa4,0x1c,0x9b,0x06,0xfe,0x0a,0x11,0x28,0xa2,0xe4,0xbc,0x2a,0x9d,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x91,0x55,0xcb,0x87,0x2c,0x7a,0xa8,0x76,0x63,0xab,0x80,0xd2,0x03,0x14,0x1e,0xc4,0xe5,0x55,0xa9,0xb6,0x7c,0x4e,0xc0,0xb9,0x25,0xea,0x43,0xf5,0x90,0x70,0x16,0x06,0xd3,0x84,0x1e,0x2d,0xcd,0xea,0x46,0x91,0x10,0xe8,0x37,0xc1,0x1a,0x26,0x44,0x3e,0x65,0x1b,0x4e,0x8b,0x47,0xc5,0xf9,0xff,0x13,0xfd,0x0d,0x20,0x11,0x6c,0x9e,0x48,0x06,0x2b,0x13,0x62,0x7a,0x11,0x2a,0x9d,0x53,0x4b,0x9d,0x1a,0x18,0xcb,0xd5,0x39,0x09,0x04,0x20,0xda,0xc9,0x62,0x9c,0xd4,0xfe,0xd6,0xfb,0x47,0x46,0x33,0x2d,0x72,0x1b,0x8b,0x0a,0xcd,0x93,0x9d,0xca,0x3f,0xd3,0x18,0x50,0x64,0x47,0x3d,0xe7,0xad,0x15,0x66,0x57,0xc7,0x12,0xd7,0x19,0x2b,0x45,0xd4,0xf6,0x0a,0x53,0x1c,0xad,0x71,0x47,0x22,0x47,0x91,0x3c,0x41,0x7a,0x0c,0x99,0x84,0x35,0xd4,0x62,0xc8,0x7c,0xf9,0xeb,0xa6,0xfb,0xe0,0x8b,0x02,0x6a,0xd0,0x07,0x2d,0x60,0x00,0xb4,0xbe,0xca,0xc2,0x93,0x80,0x12,0xf9,0xdb,0xf2,0xb5,0xae,0xbd,0x57,0x5a,0x6f,0x13,0x4e,0x1d,0xc7,0x2f,0x2a,0xa7,0x52,0x2e,0x4f,0xcb,0x89,0xef,0xb0,0xfb,0x33,0x9d,0xe4,0x45,0x1a,0x55,0x94,0x37,0x5f,0x5f,0x47,0x77,0xf7,0xb3,0x90,0x38,0xe2,0x6b,0x43,0xa8,0xe4,0x2e,0xd3,0xc7,0xa5,0x23,0xff,0x1c,0xee,0x12,0x66,0xde,0x0e,0x90,0x79,0x25,0xad,0x99,0x84,0xba,0x8c,0x7a,0x09,0x26,0x3f,0x8a,0x78,0xf5,0x80,0x86,0x88,0xc5,0xd6,0x40,0x42,0xef,0x87,0xcf,0xe2,0xf4,0x15,0x7f,0xa2,0xbd,0xc2,0x92,0x47,0xf4,0x49,0x5f,0xbf,0x1b,0xbd,0xc4,0xf3,0xd5,0xe5,0x3f,0xcd,0x74,0x19,0xad,0x3e,0xa9,0x8d,0x03,0x5f,0xb2,0xff,0x5d,0x3c,0x38,0xc3,0xf7,0x3b,0xd1,0x91,0xe9,0x65,0xa6,0x7c,0xbb,0xe9,0x2e,0x00,0x66,0x6f,0xe8,0x49,0x8d,0x16,0x90,0xee,0xdb,0x9f,0xc0,0x60,0xa9,0x67,0xd3,0xc1,0x95,0xba,0x15,0x30,0xb2,0x8e,0x85,0x6b,0x62,0x02,0x62,0xc0,0xe8,0xeb,0xae,0x34,0xae,0xf9,0x46,0xfa,0x2e,0x2c,0xb8,0x6b,0x37,0xb2,0x35,0x8e,0x38,0x6d,0x0b,0xa4,0x2c,0x2e,0x59,0x32,0x47,0xcf,0x06,0x2c,0x98,0xcc,0x13,0x06,0x70,0x35,0xbd,0xa4,0x25,0xc7,0x9f,0x12,0xc9,0x08,0xcb,0xf0,0x35,0x40,0x12,0xf9,0x39,0xf9,0xd4,0xad,0xd8,0x03,0x76,0x17,0xce,0x36,0x00,0x78,0x51,0x12,0xf7,0xd5};
++SECURITY_READ_ONLY_LATE(static uint8_t) owner_namespace[48] = {0x9f,0x80,0xec,0x0b,0xb0,0x2c,0x99,0x24,0x67,0xff,0x9f,0xac,0x3f,0x2c,0xf7,0xb1,0xf3,0x6c,0xf9,0x3e,0xb1,0x20,0x1f,0x14,0x61,0x9b,0x4a,0xec,0xd9,0xc6,0x0e,0xf9,0xa9,0x27,0xdc,0xad,0xe8,0x38,0x06,0x08,0x01,0xe0,0x6f,0x0a,0xbe,0x2c,0x5d,0x2f};
+ SECURITY_READ_ONLY_LATE(static struct sweet_merkle_policy) owner_policy = {
+ .envelope=owner_envelope,.envelope_bytes=sizeof(owner_envelope),
+diff --git a/bsd/dev/sweet_owner_preboot.c b/bsd/dev/sweet_owner_preboot.c
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/sweet_owner_preboot.c
+@@ -0,0 +1,160 @@
++/* Source-owned DEVELOPMENT Data seed. Before init, serialized, no pivots/remounts.
++ * Not wired to a build yet. The signed root must contain this exact seed first.
++ * Never frees backing after attempting mdevadd: it may have partially published.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET) && defined(SWEET_MERKLE_ROOT)
++#include <sys/types.h>
++#include <sys/param.h>
++#include <sys/errno.h>
++#include <sys/mount.h>
++#include <sys/vnode.h>
++#include <sys/vnode_internal.h>
++#include <sys/file.h>
++#include <sys/uio.h>
++#include <sys/conf.h>
++#include <kern/kalloc.h>
++#include <libkern/libkern.h>
++#include <libkern/crypto/sha2.h>
++#include <stdbool.h>
++
++extern dev_t mdevadd(int, uint64_t, unsigned int, int);
++extern dev_t mdevlookup(int);
++extern int sweet_owner_mounted_identity(dev_t, const uint8_t[16], uint8_t[48]);
++extern int sweet_kernel_mount_preboot(dev_t);
++extern int sweet_kernel_prepare_preboot(dev_t,const uint8_t[48]);
++#define OWNER_PREBOOT_BYTES ((size_t)268435456)
++#define OWNER_PREBOOT_CHUNK ((size_t)65536)
++static const char owner_seed_path[] = "/usr/standalone/owner/preboot.hfsx";
++static const uint8_t owner_seed_sha[32] = {
++ 0xa2,0x7d,0xaa,0xcc,0x3d,0x2d,0x9e,0x22,0xeb,0x62,0x9b,0xf1,0x7b,0x79,0x75,0x17,0xf7,0x35,0xeb,0x40,0xc4,0x0c,0x9a,0xe8,0xb3,0xb4,0x14,0xc7,0x83,0xdb,0x1f,0x14
++};
++static const uint8_t owner_preboot_uuid[16] = {
++ 0x69,0xcf,0xc2,0x5d,0xf2,0x98,0x3c,0x20,0x8f,0xbf,0xa9,0x2d,0x39,0x11,0x4e,0x8f
++};
++/* Runtime BSS, deliberately NOT late-RO: all writes occur after lockdown. */
++static bool owner_preboot_called;
++static void *owner_preboot_backing;
++
++static int
++owner_fs_uuid(mount_t mp, uint8_t uuid[16])
++{
++ struct vfs_attr a;
++ bzero(&a,sizeof(a)); VFSATTR_INIT(&a); VFSATTR_WANTED(&a,f_uuid);
++ int e=vfs_getattr(mp,&a,vfs_context_kernel());
++ if(e) return e;
++ if(!VFSATTR_IS_SUPPORTED(&a,f_uuid)) return EOPNOTSUPP;
++ memcpy(uuid,a.f_uuid,16); return 0;
++}
++
++static int
++owner_root_valid(vnode_t root,mount_t mp,vnode_t devvp,dev_t dev,
++ const uint8_t uuid[16],const uint8_t expected[48])
++{
++ uint8_t actual[16],digest[48];
++ vnode_t now=vfs_rootvnode();
++ if(now==NULLVP) return ENXIO;
++ bool same=now==root && vnode_mount(now)==mp && vnode_vtype(now)==VDIR;
++ vnode_put(now);
++ if(!same || vnode_mount(root)!=mp) return ESTALE;
++ const struct vfsstatfs *s=vfs_statfs(mp);
++ if(!s || strncmp(s->f_fstypename,"hfs",sizeof(s->f_fstypename)) || !(vfs_flags(mp)&MNT_RDONLY)) return EROFS;
++ vnode_t d=vfs_devvp(mp);
++ if(d==NULLVP) return ENXIO;
++ same=d==devvp && vnode_vtype(d)==VBLK && vnode_specrdev(d)==dev;
++ vnode_put(d);
++ if(!same) return ESTALE;
++ int e=owner_fs_uuid(mp,actual);
++ if(e || memcmp(actual,uuid,16)) return e ? e : ESTALE;
++ e=sweet_owner_mounted_identity(dev,uuid,digest);
++ if(e || memcmp(digest,expected,48)) { bzero(digest,sizeof(digest)); return e ? e : ESTALE; }
++ bzero(digest,sizeof(digest)); return 0;
++}
++
++/* Actual held-vnode IO loop, extracted unchanged for host failure tests. */
++static int
++owner_read_seed(vnode_t seed,void *buffer,size_t bytes,vfs_context_t ctx)
++{
++ size_t offset=0;
++ while(offset<bytes) {
++  size_t n=bytes-offset;
++  if(n>OWNER_PREBOOT_CHUNK) n=OWNER_PREBOOT_CHUNK;
++  int residual=0;
++  int e=vn_rdwr(UIO_READ,seed,(caddr_t)buffer+offset,(int)n,(off_t)offset,
++   UIO_SYSSPACE,IO_NODELOCKED|IO_NOCACHE|IO_RAOFF,vfs_context_ucred(ctx),
++   &residual,vfs_context_proc(ctx));
++  if(e || residual!=0) return e ? e : EIO;
++  offset+=n;
++ }
++ return 0;
++}
++
++int
++sweet_owner_prepare_preboot(void)
++{
++ if(owner_preboot_called) return EALREADY;
++ owner_preboot_called=true;
++ int e=ENXIO; bool busy=false,opened=false,handed=false;
++ vnode_t root=NULLVP,devvp=NULLVP,seed=NULLVP,data=NULLVP;
++ mount_t mp=NULL; void *buffer=NULL; off_t size=0;
++ dev_t dev=NODEV,md=NODEV;
++ uint8_t uuid[16]={0},digest[48]={0},actual_sha[32]={0};
++ SHA256_CTX hash;
++ bzero(&hash,sizeof(hash));
++ vfs_context_t ctx=vfs_context_kernel();
++ root=vfs_rootvnode(); if(root==NULLVP) goto out;
++ mp=vnode_mount(root); if(mp==NULL) goto out;
++ e=vfs_busy(mp,LK_NOWAIT); if(e) goto out; busy=true;
++ devvp=vfs_devvp(mp); if(devvp==NULLVP || vnode_vtype(devvp)!=VBLK) {e=ENXIO;goto out;}
++ dev=vnode_specrdev(devvp);
++ e=owner_fs_uuid(mp,uuid); if(e) goto out;
++ e=sweet_owner_mounted_identity(dev,uuid,digest); if(e) goto out;
++ e=owner_root_valid(root,mp,devvp,dev,uuid,digest); if(e) goto out;
++ if(mdevlookup(14)!=(dev_t)-1) {e=EBUSY;goto out;}
++ e=vnode_lookup(owner_seed_path,VNODE_LOOKUP_NOFOLLOW|VNODE_LOOKUP_NOCROSSMOUNT,&seed,ctx);
++ if(e) goto out;
++ if(vnode_vtype(seed)!=VREG || vnode_mount(seed)!=mp) {e=EXDEV;goto out;}
++ e=vnode_size(seed,&size,ctx); if(e) goto out;
++ if(size<0 || (uint64_t)size!=OWNER_PREBOOT_BYTES) {e=EINVAL;goto out;}
++ e=VNOP_OPEN(seed,FREAD,ctx); if(e) goto out; opened=true;
++ buffer=kalloc_data(OWNER_PREBOOT_BYTES,Z_WAITOK);
++ if(buffer==NULL) {e=ENOMEM;goto out;}
++ if(((uintptr_t)buffer&4095)!=0) {e=EINVAL;goto out;}
++ e=owner_read_seed(seed,buffer,OWNER_PREBOOT_BYTES,ctx); if(e) goto out;
++ SHA256_Init(&hash); SHA256_Update(&hash,buffer,OWNER_PREBOOT_BYTES); SHA256_Final(actual_sha,&hash);
++ if(memcmp(actual_sha,owner_seed_sha,32)) {e=EAUTH;goto out;}
++ e=vnode_size(seed,&size,ctx); if(e) goto out;
++ if(size!=(off_t)OWNER_PREBOOT_BYTES || vnode_vtype(seed)!=VREG || vnode_mount(seed)!=mp) {e=ESTALE;goto out;}
++ e=owner_root_valid(root,mp,devvp,dev,uuid,digest); if(e) goto out;
++ e=VNOP_CLOSE(seed,FREAD,ctx); opened=false; if(e) goto out;
++ /* Publish only after all authentication. Own until reboot even on partial add. */
++ owner_preboot_backing=buffer; handed=true;
++ md=mdevadd(14,(uint64_t)(uintptr_t)buffer>>12,(unsigned int)(OWNER_PREBOOT_BYTES>>12),0);
++ if(md==(dev_t)-1 || mdevlookup(14)!=md) {e=ENXIO;goto out;}
++ e=sweet_kernel_mount_preboot(md); if(e) goto out;
++ e=vnode_lookup("/private/preboot",VNODE_LOOKUP_NOFOLLOW,&data,ctx); if(e) goto out;
++ mount_t data_mp=vnode_mount(data);
++ const struct vfsstatfs *s=data_mp ? vfs_statfs(data_mp) : NULL;
++ if(vnode_vtype(data)!=VDIR || !vnode_isvroot(data) || data_mp==mp || !s || strncmp(s->f_fstypename,"hfs",sizeof(s->f_fstypename)) || (vfs_flags(data_mp)&MNT_RDONLY)) {e=EINVAL;goto out;}
++ vnode_t data_dev=vfs_devvp(data_mp);
++ if(data_dev==NULLVP) {e=ENXIO;goto out;}
++ bool same=vnode_vtype(data_dev)==VBLK && vnode_specrdev(data_dev)==md;
++ vnode_put(data_dev);
++ if(!same) {e=EXDEV;goto out;}
++ uint8_t mounted_uuid[16];
++ e=owner_fs_uuid(data_mp,mounted_uuid);
++ if(e || memcmp(mounted_uuid,owner_preboot_uuid,16)) {if(!e)e=ESTALE;goto out;}
++ e=sweet_kernel_prepare_preboot(md,digest); if(e) goto out;
++ e=owner_root_valid(root,mp,devvp,dev,uuid,digest);
++out:
++ if(opened) {int close_error=VNOP_CLOSE(seed,FREAD,ctx);if(!e)e=close_error;}
++ if(data!=NULLVP) vnode_put(data);
++ if(seed!=NULLVP) vnode_put(seed);
++ if(devvp!=NULLVP) vnode_put(devvp);
++ if(busy) vfs_unbusy(mp);
++ if(root!=NULLVP) vnode_put(root);
++ if(buffer!=NULL && !handed) {bzero(buffer,OWNER_PREBOOT_BYTES);kfree_data(buffer,OWNER_PREBOOT_BYTES);}
++ bzero(&hash,sizeof(hash));bzero(actual_sha,sizeof(actual_sha));bzero(digest,sizeof(digest));
++ /* Caller MUST panic on any failure; no init/retry after partial md or mount. */
++ return e;
++}
++#endif
