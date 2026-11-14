@@ -246,3 +246,5 @@ arch:../../../patches/xnu/source-corecrypto14-bootstrap.patch
 0209-sweet-cflags-extra-interface.patch
 # Register built-in MAC policies before the native static table is sealed.
 0214-sweet-static-mac-policy-registration.patch
+# Use the native iOS root/preboot cache contract; explicitly enforce signed code.
+0216-sweet-ios-shared-cache-policy-config.patch
