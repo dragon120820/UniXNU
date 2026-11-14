@@ -1,0 +1,40 @@
+--- a/security/mac_base.c
++++ b/security/mac_base.c
+@@ -376,2 +376,8 @@
+ 	}
++#if CONFIG_MACF && defined(ARM64_BOARD_CONFIG_SWEET)
++	/* Static policies must register before mac_late and DATA_CONST lockdown.
++	 * Preserve the native security-extension loader and policy framework. */
++	extern void sweet_amfi_policy_register(void);
++	sweet_amfi_policy_register();
++#endif
+ 	mac_late = 1;
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -695,7 +695,2 @@
+ 
+-#if defined(ARM64_BOARD_CONFIG_SWEET)
+-	/* AMFI's MAC policy is built in on SWEET (bsd/kern/sweet_amfi.c). */
+-	extern void sweet_amfi_policy_register(void);
+-	sweet_amfi_policy_register();
+-#endif
+ 
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -369,3 +369,3 @@
+ 
+-/* Called from bsd_init once MAC policies can register, before any exec. */
++/* Called once from mac_policy_initmach before the static policy table is sealed. */
+ void sweet_amfi_policy_register(void);
+@@ -378,2 +378,5 @@
+ 	    error ? "NOT registered" : "registered", error);
++	if (error) {
++		panic("SWEET AMFI: MAC policy registration failed (%d)", error);
++	}
+ 	error = mac_policy_register(&sweet_sandbox_mac_conf, &sweet_sandbox_mac_handle, NULL);
+@@ -381,2 +384,5 @@
+ 	    error ? "NOT registered" : "registered", error);
++	if (error) {
++		panic("SWEET Sandbox: MAC policy registration failed (%d)", error);
++	}
+ }

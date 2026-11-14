@@ -244,3 +244,5 @@ arch:../../../patches/xnu/source-corecrypto14-bootstrap.patch
 0208-sweet-crypto-provider-selection.patch
 # 8796 must consume the build wrapper's CFLAGS_EXTRA, as newer XNU does.
 0209-sweet-cflags-extra-interface.patch
+# Register built-in MAC policies before the native static table is sealed.
+0214-sweet-static-mac-policy-registration.patch
