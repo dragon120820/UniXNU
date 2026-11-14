@@ -191,6 +191,8 @@ if [ "$SWEET_MERKLE_MODE" = 1 ]; then
   fi
   EXTRA_MAKE_ARGS+=("sweet_ufs.o_CFLAGS_ADD=-DSWEET_MERKLE_ROOT=1")
   EXTRA_MAKE_ARGS+=("sweet_owner_policy.o_CFLAGS_ADD=-DSWEET_MERKLE_ROOT=1")
+  EXTRA_MAKE_ARGS+=("bsd_init.o_CFLAGS_ADD=-DSWEET_MERKLE_ROOT=1")
+  EXTRA_MAKE_ARGS+=("sweet_owner_publish.o_CFLAGS_ADD=-DSWEET_MERKLE_ROOT=1")
 fi
 # A fileset boot replaces com.apple.kernel inside a kernel collection: the
 # native executable must carry chained fixups and split-segment records.
@@ -228,6 +230,8 @@ if [ "$XNU_MACHINE_CONFIG" = SWEET ]; then
   SWEET_PREVIOUS_MODE=$(cat "$SWEET_MODE_STAMP" 2>/dev/null || printf unknown)
   if { [ -f "$SWEET_MODE_DIR/bsd/DEVELOPMENT/sweet_ufs.o" ] || \
        [ -f "$SWEET_MODE_DIR/bsd/DEVELOPMENT/sweet_owner_policy.o" ] || \
+       [ -f "$SWEET_MODE_DIR/bsd/DEVELOPMENT/bsd_init.o" ] || \
+       [ -f "$SWEET_MODE_DIR/bsd/DEVELOPMENT/sweet_owner_publish.o" ] || \
        [ -f "$SWEET_MODE_DIR/mach.development.sweet" ] || \
        [ -f "$SWEET_MODE_DIR/kernel.development.sweet" ]; } && \
        [ "$SWEET_PREVIOUS_MODE" != "$SWEET_MERKLE_MODE" ]; then

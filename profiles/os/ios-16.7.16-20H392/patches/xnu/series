@@ -252,3 +252,4 @@ arch:../../../patches/xnu/source-corecrypto14-bootstrap.patch
 0217-sweet-reserve-early-framebuffer-va.patch
 0218-sweet-merkle-sdk-build.patch
 0219-sweet-owner-development-supplier.patch
+0220-sweet-owner-mounted-root-bridge.patch

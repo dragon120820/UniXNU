@@ -1,0 +1,427 @@
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -1038,4 +1038,16 @@
+ #endif /* CONFIG_BASESYSTEMROOT */
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET) && defined(SWEET_MERKLE_ROOT)
++    /* All root pivots are complete; no userspace/pivot/remount/key-writer may
++     * run concurrently with this one-shot authenticated namespace transaction. */
++    {
++        extern int sweet_owner_publish_mounted_root(void);
++        int owner_error = sweet_owner_publish_mounted_root();
++        if (owner_error != 0) {
++            panic("SWEET owner: final mounted root publication refused: %d", owner_error);
++        }
++    }
++#endif
++
+ 	/* Initialize signal state for process 0. */
+ 	bsd_init_kprintf("calling siginit\n");
+diff --git a/bsd/conf/files b/bsd/conf/files
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -110,4 +110,5 @@
+ bsd/dev/verified_root_xnu_crypto.c	standard
+ bsd/dev/sweet_owner_policy.c		standard
++bsd/dev/sweet_owner_publish.cpp		standard
+ bsd/dev/sweet_sample.c			standard
+ bsd/dev/sweet_keys.c			standard
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -42,4 +42,5 @@
+ #if defined(SWEET_MERKLE_ROOT)
+ #include "sweet_merkle_policy.h"
++#include "sweet_owner_bridge.h"
+ #include <libkern/section_keywords.h>
+ #endif
+@@ -142,4 +143,50 @@
+         sweet_policy = policy;
+     }
++    lck_mtx_unlock(&sweet_ufs_lock);
++    return error;
++}
++#endif
++
++#if defined(SWEET_MERKLE_ROOT)
++/* Called only by the before-init mounted-root bridge, not an authorization ioctl.
++ * Its destination and UUID must be private nonalias CPU-owned kernel buffers. */
++int
++sweet_owner_mounted_identity(dev_t device, const uint8_t uuid[16], uint8_t digest[48])
++{
++    int error = EACCES;
++    size_t namespace_bytes = 0;
++    const uint8_t *namespace_data;
++    const struct sweet_merkle_policy *p;
++    const struct vrm_view *v;
++    if (!digest) return EINVAL;
++    bzero(digest, 48);
++    if (!uuid) return EINVAL;
++    lck_mtx_lock(&sweet_ufs_lock);
++    p = sweet_policy;
++    v = &sweet_verified.view;
++    if (!p || !su.ready || su.writable || device != su.bdev ||
++        !sweet_init_started || sweet_controller_closed ||
++        !sweet_verified.ready || sweet_verified.transport_poisoned ||
++        !p->envelope || p->envelope_bytes != VRM_ENVELOPE_BYTES ||
++        !p->crypto.sha256 || !p->crypto.rsa3072_sha256 ||
++        !p->image_bytes || p->image_bytes % UFS_BLOCK ||
++        sweet_authenticated_bytes != p->image_bytes || v->image_bytes != p->image_bytes ||
++        v->block_count != p->image_bytes / UFS_BLOCK || v->generation < p->min_generation ||
++        memcmp(&v->generation, p->envelope + 152, 8) || /* reviewed little-endian ARM64 */
++        su.first_block != p->partition_first || su.nblocks != p->partition_blocks ||
++        sweet_lun_blocks != p->lun_blocks ||
++        sweet_verified.data_first != p->data_first ||
++        sweet_verified.tree_first != p->tree_first ||
++        sweet_verified.partition_first != p->partition_first ||
++        sweet_verified.partition_blocks != p->partition_blocks ||
++        sweet_verified.lun_blocks != p->lun_blocks ||
++        memcmp(uuid, p->volume_uuid, 16) || memcmp(v->volume_uuid, p->volume_uuid, 16) ||
++        memcmp(v->root, p->envelope + 88, 32) ||
++        memcmp(v->image_sha256, p->envelope + 56, 32)) goto out;
++    namespace_data = sweet_owner_namespace(&namespace_bytes);
++    if (!namespace_data || namespace_bytes != 48) goto out;
++    memcpy(digest, namespace_data, 48);
++    error = 0;
++out:
+     lck_mtx_unlock(&sweet_ufs_lock);
+     return error;
+diff --git a/bsd/dev/sweet_owner_publish.cpp b/bsd/dev/sweet_owner_publish.cpp
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/sweet_owner_publish.cpp
+@@ -0,0 +1,307 @@
++/*
++ * SWEET source-owned composite HFS namespace publisher, XNU 8796.
++ * NOT an Apple ticket, seal, or extension of Apple secure boot.
++ * See REVIEW.md for the mandatory before-init single-writer contract.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET) && defined(SWEET_MERKLE_ROOT)
++
++#include <IOKit/IORegistryEntry.h>
++#include <IOKit/IODeviceTreeSupport.h>
++#include <libkern/c++/OSData.h>
++#include <libkern/c++/OSSymbol.h>
++
++extern "C" {
++#include <sys/types.h>
++#include <sys/param.h>
++#include <sys/errno.h>
++#include <sys/mount.h>
++#include <sys/vnode.h>
++#include <libkern/libkern.h>
++#include <kern/debug.h>
++
++/* Implemented in the authenticated SWEET C driver TU, not by this bridge. */
++int sweet_owner_mounted_identity(dev_t dev, const uint8_t uuid[16],
++    uint8_t digest[48]);
++/* Actual C-linkage consumer in iokit/bsddev/IOKitBSDInit.cpp:527-553. */
++bool IOGetBootManifestHash(char *hash_data, size_t *hash_data_size);
++}
++
++/* Plain writable BSS: this is NOT SECURITY_READ_ONLY_LATE. No retry, even
++ * after failure. The only caller is serialized bsd_init, before siginit/init. */
++static bool sweet_owner_publish_called;
++static const char owner_domain[] = "VerifiedRoot.OwnerCompositeHFS.v1";
++static_assert(sizeof(owner_domain) == 34, "owner domain includes exactly one NUL");
++static_assert(sizeof(((struct vfs_attr *)0)->f_uuid) == 16,
++    "mounted filesystem UUID must be the full 16 bytes");
++
++/* All property reads use retained copyProperty(), never borrowed getProperty(). */
++static bool
++property_present(IORegistryEntry *chosen, const OSSymbol *key)
++{
++    OSObject *value = chosen->copyProperty(key);
++    if (value == NULL) {
++        return false;
++    }
++    value->release();
++    return true;
++}
++
++static bool
++property_matches(IORegistryEntry *chosen, const OSSymbol *key,
++    const void *bytes, unsigned int length)
++{
++    OSObject *value = chosen->copyProperty(key);
++    OSData *data = OSDynamicCast(OSData, value);
++    bool matches = data != NULL && data->getLength() == length &&
++        data->getBytesNoCopy() != NULL &&
++        memcmp(data->getBytesNoCopy(), bytes, length) == 0;
++    if (value != NULL) {
++        value->release();
++    }
++    return matches;
++}
++
++static int
++mounted_uuid(mount_t mp, uint8_t uuid[16])
++{
++    struct vfs_attr attr;
++    bzero(&attr, sizeof(attr));
++    VFSATTR_INIT(&attr);
++    VFSATTR_WANTED(&attr, f_uuid);
++    int error = vfs_getattr(mp, &attr, vfs_context_kernel());
++    if (error != 0) {
++        return error;
++    }
++    if (!VFSATTR_IS_SUPPORTED(&attr, f_uuid)) {
++        return EOPNOTSUPP;
++    }
++    memcpy(uuid, attr.f_uuid, 16);
++    return 0;
++}
++
++/* root and devvp retain iocounts and mp remains busy throughout publication.
++ * Busy prevents unmount, NOT arbitrary remount or a global-root pivot: the
++ * before-init no-pivot/no-remount contract is additionally required. */
++static int
++mounted_recheck(vnode_t root, mount_t mp, vnode_t devvp, dev_t dev,
++    const uint8_t uuid[16])
++{
++    vnode_t current = vfs_rootvnode();
++    if (current == NULLVP) {
++        return ENXIO;
++    }
++    bool same = current == root && vnode_mount(current) == mp &&
++        vnode_vtype(current) == VDIR && vnode_mount(root) == mp;
++    vnode_put(current);
++    if (!same) {
++        return ESTALE;
++    }
++    const struct vfsstatfs *stat = vfs_statfs(mp);
++    if (stat == NULL || strncmp(stat->f_fstypename, "hfs",
++        sizeof(stat->f_fstypename)) != 0) {
++        return EINVAL;
++    }
++    if ((vfs_flags(mp) & MNT_RDONLY) == 0) {
++        return EROFS;
++    }
++    vnode_t current_dev = vfs_devvp(mp);
++    if (current_dev == NULLVP) {
++        return ENXIO;
++    }
++    same = current_dev == devvp && vnode_vtype(current_dev) == VBLK &&
++        vnode_specrdev(current_dev) == dev;
++    vnode_put(current_dev);
++    if (!same) {
++        return ESTALE;
++    }
++    uint8_t actual_uuid[16];
++    int error = mounted_uuid(mp, actual_uuid);
++    if (error != 0) {
++        return error;
++    }
++    if (memcmp(actual_uuid, uuid, sizeof(actual_uuid)) != 0) {
++        return ESTALE;
++    }
++    return 0;
++}
++
++extern "C" int
++sweet_owner_publish_mounted_root(void)
++{
++    if (sweet_owner_publish_called) {
++        return EALREADY;
++    }
++    sweet_owner_publish_called = true;
++
++    int error = ENXIO;
++    vnode_t root = NULLVP;
++    vnode_t devvp = NULLVP;
++    mount_t mp = NULL;
++    bool busy = false;
++    bool publishing = false;
++    IORegistryEntry *chosen = NULL;
++    const OSSymbol *hash_key = NULL;
++    const OSSymbol *domain_key = NULL;
++    const OSSymbol *objects_key = NULL;
++    OSData *hash_data = NULL;
++    OSData *domain_data = NULL;
++    dev_t dev = NODEV;
++    uint8_t uuid[16] = { 0 };
++    uint8_t digest[48] = { 0 };
++    uint8_t checked_digest[48] = { 0 };
++    char consumer_digest[48] = { 0 };
++    size_t consumer_length = sizeof(consumer_digest);
++
++    /* vfs_rootvnode takes rootvnode_rw_lock and returns an iocount. */
++    root = vfs_rootvnode();
++    if (root == NULLVP) {
++        goto out;
++    }
++    mp = vnode_mount(root);
++    if (mp == NULL) {
++        goto out;
++    }
++    error = vfs_busy(mp, LK_NOWAIT);
++    if (error != 0) {
++        goto out;
++    }
++    busy = true;
++    devvp = vfs_devvp(mp);
++    if (devvp == NULLVP || vnode_vtype(devvp) != VBLK) {
++        error = ENXIO;
++        goto out;
++    }
++    dev = vnode_specrdev(devvp); /* exact kernel dev_t, not a path/major guess */
++    if (dev == NODEV) {
++        error = ENXIO;
++        goto out;
++    }
++    error = mounted_uuid(mp, uuid);
++    if (error != 0) {
++        goto out;
++    }
++    error = mounted_recheck(root, mp, devvp, dev, uuid);
++    if (error != 0) {
++        goto out;
++    }
++    error = sweet_owner_mounted_identity(dev, uuid, digest);
++    if (error != 0) {
++        goto out;
++    }
++
++    chosen = IORegistryEntry::fromPath("/chosen", gIODTPlane);
++    if (chosen == NULL) {
++        error = ENXIO;
++        goto out;
++    }
++    /* Pre-create every key and value; no allocating C-string setProperty
++     * overload or implicit OSData allocation in the commit path. The registry
++     * dictionary may still fail its internal insertion; that is rolled back. */
++    hash_key = OSSymbol::withCStringNoCopy("boot-manifest-hash");
++    domain_key = OSSymbol::withCStringNoCopy("verified-root-owner-domain");
++    objects_key = OSSymbol::withCStringNoCopy("boot-objects-path");
++    hash_data = OSData::withBytes(digest, sizeof(digest));
++    domain_data = OSData::withBytes(owner_domain, sizeof(owner_domain));
++    if (hash_key == NULL || domain_key == NULL || objects_key == NULL ||
++        hash_data == NULL || domain_data == NULL) {
++        error = ENOMEM;
++        goto out;
++    }
++    /* Never replace any existing Apple, owner, or boot path property, whatever
++     * its type/contents. Single-writer contract closes check/set races. */
++    if (property_present(chosen, hash_key) ||
++        property_present(chosen, domain_key) ||
++        property_present(chosen, objects_key)) {
++        error = EEXIST;
++        goto out;
++    }
++    error = mounted_recheck(root, mp, devvp, dev, uuid);
++    if (error != 0) {
++        goto out;
++    }
++    error = sweet_owner_mounted_identity(dev, uuid, checked_digest);
++    if (error != 0) {
++        goto out;
++    }
++    if (memcmp(checked_digest, digest, sizeof(digest)) != 0) {
++        error = ESTALE;
++        goto out;
++    }
++
++    /* Mark before the first attempted set: even a failed set is cleaned up.
++     * Domain first; no boot-manifest-hash is exposed without its owner tag. */
++    publishing = true;
++    error = EIO;
++    if (!chosen->setProperty(domain_key, domain_data) ||
++        !property_matches(chosen, domain_key, owner_domain, sizeof(owner_domain)) ||
++        !chosen->setProperty(hash_key, hash_data) ||
++        !property_matches(chosen, hash_key, digest, sizeof(digest))) {
++        goto out;
++    }
++    if (!property_matches(chosen, domain_key, owner_domain, sizeof(owner_domain)) ||
++        property_present(chosen, objects_key) ||
++        !IOGetBootManifestHash(consumer_digest, &consumer_length) ||
++        consumer_length != sizeof(digest) ||
++        memcmp(consumer_digest, digest, sizeof(digest)) != 0) {
++        goto out;
++    }
++    error = mounted_recheck(root, mp, devvp, dev, uuid);
++    if (error != 0) {
++        goto out;
++    }
++    /* Revalidate backend health after filesystem operations, too. */
++    error = sweet_owner_mounted_identity(dev, uuid, checked_digest);
++    if (error != 0) {
++        goto out;
++    }
++    if (memcmp(checked_digest, digest, sizeof(digest)) != 0) {
++        error = ESTALE;
++        goto out;
++    }
++    error = 0;
++
++out:
++    if (error != 0 && publishing) {
++        chosen->removeProperty(hash_key);
++        chosen->removeProperty(domain_key);
++        /* removeProperty returns void. Independently read BOTH keys back. */
++        bool hash_remains = property_present(chosen, hash_key);
++        bool domain_remains = property_present(chosen, domain_key);
++        if (hash_remains || domain_remains) {
++            panic("SWEET owner namespace rollback failed; refusing partial publish");
++        }
++    }
++    if (domain_data != NULL) {
++        domain_data->release();
++    }
++    if (hash_data != NULL) {
++        hash_data->release();
++    }
++    if (objects_key != NULL) {
++        objects_key->release();
++    }
++    if (domain_key != NULL) {
++        domain_key->release();
++    }
++    if (hash_key != NULL) {
++        hash_key->release();
++    }
++    if (chosen != NULL) {
++        chosen->release();
++    }
++    if (devvp != NULLVP) {
++        vnode_put(devvp);
++    }
++    if (busy) {
++        vfs_unbusy(mp);
++    }
++    if (root != NULLVP) {
++        vnode_put(root);
++    }
++    bzero(digest, sizeof(digest));
++    bzero(checked_digest, sizeof(checked_digest));
++    bzero(consumer_digest, sizeof(consumer_digest));
++    return error;
++}
++
++#endif /* ARM64_BOARD_CONFIG_SWEET && SWEET_MERKLE_ROOT */
+diff --git a/bsd/dev/sweet_owner_bridge.h b/bsd/dev/sweet_owner_bridge.h
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/sweet_owner_bridge.h
+@@ -0,0 +1,21 @@
++/* Private before-init interface. Not a device ioctl or caller-chosen hash API. */
++#ifndef SWEET_OWNER_BRIDGE_H
++#define SWEET_OWNER_BRIDGE_H
++#include <sys/types.h>
++#include <stdint.h>
++#include <stddef.h>
++#ifdef __cplusplus
++extern "C" {
++#endif
++#if defined(ARM64_BOARD_CONFIG_SWEET) && defined(SWEET_MERKLE_ROOT)
++/* out/uuid are trusted private nonalias kernel buffers. Never initializes UFS.
++ * Copies only the protected supplier namespace after exact healthy RO identity.
++ * Output is zero on failure. Publisher must separately own final mounted HFS. */
++int sweet_owner_mounted_identity(dev_t,const uint8_t[16],uint8_t[48]);
++int sweet_owner_publish_mounted_root(void);
++const uint8_t *sweet_owner_namespace(size_t *);
++#endif
++#ifdef __cplusplus
++}
++#endif
++#endif
