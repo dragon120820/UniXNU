@@ -1,0 +1,756 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -39,6 +39,9 @@
+ #include <pexpert/device_tree.h>
+ #include <libkern/libkern.h>
+ #include <machine/atomic.h>
++#if defined(SWEET_MERKLE_ROOT)
++#include "sweet_merkle_policy.h"
++#endif
+ 
+ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+ /* osfmk/arm/machine_routines.h, not exported to the BSD layer */
+@@ -115,8 +118,32 @@
+ 	bool ready;
+ } su;
+ 
++#if defined(SWEET_MERKLE_ROOT)
++static const struct sweet_merkle_policy *sweet_policy; /* deliberately NULL */
++static struct vrmi sweet_verified; /* private, zero initialized, never reopened */
++static uint8_t sweet_workspace[VRMI_MAX_WORKSPACE]; /* not DMA memory */
++static uint64_t sweet_lun_blocks, sweet_authenticated_bytes;
++static bool sweet_init_started, sweet_controller_closed;
++#endif
++
+ static LCK_GRP_DECLARE(sweet_ufs_grp, "sweet_ufs");
+ static LCK_MTX_DECLARE(sweet_ufs_lock, &sweet_ufs_grp);
++
++#if defined(SWEET_MERKLE_ROOT)
++int
++sweet_merkle_register_protected_policy(const struct sweet_merkle_policy *policy)
++{
++    int error = 0;
++    lck_mtx_lock(&sweet_ufs_lock);
++    if (!policy || sweet_policy || sweet_init_started) {
++        error = EINVAL;
++    } else {
++        sweet_policy = policy;
++    }
++    lck_mtx_unlock(&sweet_ufs_lock);
++    return error;
++}
++#endif
+ 
+ static inline uint32_t
+ ufs_rd(uint32_t off)
+@@ -153,6 +180,11 @@
+ 	struct ucd *ucd = (struct ucd *)(su.dma + DMA_UCD);
+ 	uint64_t ucd_pa = su.dma_pa + DMA_UCD, bounce_pa = su.dma_pa + DMA_BOUNCE;
+ 
++#if defined(SWEET_MERKLE_ROOT)
++    /* Check before any DMA memory/cache access. No recovery/reuse after timeout. */
++    if (sweet_controller_closed) return EIO;
++    if (write || (cdb_len && cdb[0] == 0x2a)) return EROFS;
++#endif
+ 	assert(len <= BOUNCE_SIZE);
+ 	bzero(utrd, sizeof(*utrd));
+ 	bzero(ucd, sizeof(*ucd));
+@@ -220,7 +252,13 @@
+ 	while (ufs_rd(REG_UTRLDBR) & 1) {
+ 		uint64_t now = mach_absolute_time();
+ 		if (now > deadline) {
++#if defined(SWEET_MERKLE_ROOT)
++            /* NOT quiescent: pin the permanent DMA allocation forever. No clear,
++             * reset, re-init, descriptor/bounce reuse or further submissions. */
++            sweet_controller_closed = true;
++#else
+ 			ufs_wr(REG_UTRLCLR, ~1u);
++#endif
+ 			printf("SWEET UFS: command 0x%02x timed out\n", cdb[0]);
+ 			return ETIMEDOUT;
+ 		}
+@@ -254,6 +292,12 @@
+ 		    cdb[0], ocs, ucd->resp[0], ucd->resp[6], ucd->resp[7]);
+ 		return EIO;
+ 	}
++#if defined(SWEET_MERKLE_ROOT)
++    /* Reject mismatched completion and short/overrun data: no success snapshot. */
++    if (ucd->resp[2] != su.lun || ucd->resp[3] != su.tag ||
++        (ucd->resp[1] & 0x60) || ucd->resp[12] || ucd->resp[13] ||
++        ucd->resp[14] || ucd->resp[15]) return EIO;
++#endif
+ 	return 0;
+ }
+ 
+@@ -261,6 +305,12 @@
+ static int
+ ufs_read_blocks(uint64_t lba, uint32_t count)
+ {
++#if defined(SWEET_MERKLE_ROOT)
++    if (sweet_controller_closed) return EIO;
++    if (!count || count > BOUNCE_SIZE / UFS_BLOCK || lba > UINT32_MAX ||
++        (uint64_t)(count - 1) > UINT32_MAX - lba || !sweet_lun_blocks ||
++        lba >= sweet_lun_blocks || count > sweet_lun_blocks - lba) return EINVAL;
++#endif
+ 	if (lba > UINT32_MAX || count > BOUNCE_SIZE / UFS_BLOCK) {
+ 		return EINVAL;
+ 	}
+@@ -279,6 +329,11 @@
+ static int
+ ufs_write_blocks(uint64_t lba, uint32_t count)
+ {
++#if defined(SWEET_MERKLE_ROOT)
++    /* Lowest block-write gate: applies even to thread/panic and ufsrw=1. */
++    (void)lba; (void)count;
++    return EROFS;
++#else
+ 	if (!su.writable || !su.nblocks || count == 0 || count > BOUNCE_SIZE / UFS_BLOCK ||
+ 	    lba < su.first_block || lba - su.first_block >= su.nblocks ||
+ 	    count > su.nblocks - (lba - su.first_block) || lba + count - 1 > UINT32_MAX) {
+@@ -291,6 +346,7 @@
+ 		0, (uint8_t)(count >> 8), (uint8_t)count, 0
+ 	};
+ 	return ufs_scsi(cdb, sizeof(cdb), count * UFS_BLOCK, true);
++#endif
+ }
+ 
+ static int
+@@ -298,6 +354,64 @@
+ {
+ 	static const uint8_t cdb[10] = { 0x35 };       /* SYNCHRONIZE CACHE(10), whole LUN */
+ 	return ufs_scsi(cdb, sizeof(cdb), 0, false);
++}
++
++#if defined(SWEET_MERKLE_ROOT)
++/* Must precede GPT READ10. Capacity is hardware geometry, NOT authentication. */
++static int
++sweet_read_capacity(void)
++{
++    static const uint8_t cdb[16] = { 0x9e, 0x10, 0,0,0,0,0,0,0,0, 0,0,0,32, 0,0 };
++    int error = ufs_scsi(cdb, sizeof(cdb), 32, false);
++    if (error) return error;
++    const uint8_t *b = (const uint8_t *)(su.dma + DMA_BOUNCE);
++    uint64_t last = 0;
++    uint32_t block = 0;
++    for (unsigned i = 0; i < 8; i++) last = (last << 8) | b[i];
++    for (unsigned i = 8; i < 12; i++) block = (block << 8) | b[i];
++    if (last == UINT64_MAX || block != UFS_BLOCK) return ENXIO;
++    sweet_lun_blocks = last + 1;
++    return 0;
++}
++
++/* Sole hardware mutex is held by init/strategy; callback MUST NOT lock again. */
++static int
++sweet_merkle_block(void *ctx, uint64_t absolute_lba, void *dst)
++{
++    (void)ctx;
++    if (sweet_controller_closed || ufs_read_blocks(absolute_lba, 1)) return 0;
++    memcpy(dst, (const void *)(su.dma + DMA_BOUNCE), UFS_BLOCK);
++    return 1; /* completed, cache-synchronized single-block CPU snapshot */
++}
++
++static int
++sweet_merkle_authenticate(void)
++{
++    const struct sweet_merkle_policy *p = sweet_policy;
++    uint64_t blocks = 0;
++    if (!p || !p->envelope || p->envelope_bytes != VRM_ENVELOPE_BYTES ||
++        !p->image_bytes || p->image_bytes % DEV_BSIZE ||
++        p->partition_first != su.first_block || p->partition_blocks != su.nblocks ||
++        p->lun_blocks != sweet_lun_blocks) return ENXIO;
++    if (vrmi_open(&sweet_verified, p->envelope, p->envelope_bytes, p->key,
++        p->min_generation, p->volume_uuid, p->image_bytes, p->data_first,
++        p->tree_first, p->partition_first, p->partition_blocks, p->lun_blocks,
++        &p->crypto, sweet_merkle_block, NULL) != VRMI_OK) return EIO;
++    if (vrmi_block_count(&sweet_verified, DEV_BSIZE, &blocks) != VRMI_OK ||
++        blocks != p->image_bytes / DEV_BSIZE) return EIO;
++    sweet_authenticated_bytes = p->image_bytes;
++    return 0;
++}
++#endif
++
++static uint64_t
++sweet_media_bytes(void)
++{
++#if defined(SWEET_MERKLE_ROOT)
++    return sweet_authenticated_bytes;
++#else
++    return su.nblocks * UFS_BLOCK;
++#endif
+ }
+ 
+ static int
+@@ -317,7 +431,7 @@
+ 	memcpy(&entry_lba, b + 72, 8);
+ 	memcpy(&nent, b + 80, 4);
+ 	memcpy(&esz, b + 84, 4);
+-	if (esz != 128 || nent == 0 || nent * esz > BOUNCE_SIZE) {
++	if (esz != 128 || nent == 0 || nent > BOUNCE_SIZE / esz) {
+ 		printf("SWEET UFS: unsupported GPT entries %u x %u\n", nent, esz);
+ 		return ENXIO;
+ 	}
+@@ -343,6 +457,9 @@
+ 		uint64_t first, last;
+ 		memcpy(&first, e + 32, 8);
+ 		memcpy(&last, e + 40, 8);
++#if defined(SWEET_MERKLE_ROOT)
++        if (last < first || last >= sweet_lun_blocks || last > UINT32_MAX) return ENXIO;
++#endif
+ 		if (last < first) {
+ 			return ENXIO;
+ 		}
+@@ -406,6 +523,27 @@
+ static void
+ sweet_ufs_strategy(buf_t bp)
+ {
++#if defined(SWEET_MERKLE_ROOT)
++    int error = 0;
++    caddr_t vaddr = NULL;
++    uint32_t count = buf_count(bp);
++    buf_setresid(bp, count);
++    if (!su.ready) { error = ENXIO; goto verified_done; }
++    if (!(buf_flags(bp) & B_READ)) { error = EROFS; goto verified_done; }
++    if (count > VRMI_MAX_READ) { error = EINVAL; goto verified_done; }
++    if (!count) goto verified_done;
++    if (buf_map(bp, &vaddr)) { error = EIO; goto verified_done; }
++    /* Entire request stages in core scratch: no partial unverified delivery. */
++    lck_mtx_lock(&sweet_ufs_lock);
++    if (vrmi_read(&sweet_verified, (int64_t)buf_blkno(bp), su.secsize,
++        vaddr, count, sweet_workspace, sizeof(sweet_workspace)) != VRMI_OK) error = EIO;
++    if (!error) buf_setresid(bp, 0);
++    lck_mtx_unlock(&sweet_ufs_lock);
++    buf_unmap(bp);
++verified_done:
++    if (error) buf_seterror(bp, error);
++    buf_biodone(bp);
++#else
+ 	int error = 0;
+ 	caddr_t vaddr = NULL;
+ 	uint64_t off = (uint64_t)buf_blkno(bp) * su.secsize;
+@@ -468,12 +606,16 @@
+ 		buf_seterror(bp, error);
+ 	}
+ 	buf_biodone(bp);
++#endif
+ }
+ 
+ static int
+ sweet_ufs_ioctl(__unused dev_t dev, u_long cmd, caddr_t data, __unused int flag,
+     __unused struct proc *p, int is_char)
+ {
++#if defined(SWEET_MERKLE_ROOT)
++    if (!su.ready) return ENXIO;
++#endif
+ 	uint32_t *f = (uint32_t *)data;
+ 	uint64_t *o = (uint64_t *)data;
+ 
+@@ -482,6 +624,10 @@
+ 		*f = su.secsize;
+ 		return 0;
+ 	case DKIOCSETBLOCKSIZE:
++#if defined(SWEET_MERKLE_ROOT)
++        /* Fixed 512-byte logical sectors avoid concurrent sector mutation. */
++        return is_char ? ENODEV : (*f == su.secsize ? 0 : EINVAL);
++#endif
+ 		if (is_char) {
+ 			return ENODEV;
+ 		}
+@@ -494,7 +640,7 @@
+ 		*f = UFS_BLOCK;
+ 		return 0;
+ 	case DKIOCGETBLOCKCOUNT:
+-		*o = su.nblocks * UFS_BLOCK / su.secsize;
++		*o = sweet_media_bytes() / su.secsize;
+ 		return 0;
+ 	case DKIOCISWRITABLE:
+ 		*f = su.writable;
+@@ -510,7 +656,11 @@
+ 		return error;
+ 	}
+ 	case DKIOCGETMAXBLOCKCOUNTREAD:
++#if defined(SWEET_MERKLE_ROOT)
++        *o = VRMI_MAX_READ / su.secsize;
++#else
+ 		*o = BOUNCE_SIZE / su.secsize;
++#endif
+ 		return 0;
+ 	case DKIOCGETMAXBLOCKCOUNTWRITE:
+ 		*o = su.writable ? BOUNCE_SIZE / su.secsize : 0;
+@@ -539,13 +689,22 @@
+ static int
+ sweet_ufs_psize(__unused dev_t dev)
+ {
+-	return su.ready ? (int)MIN(su.nblocks * UFS_BLOCK / su.secsize, INT_MAX) : -1;
++	return su.ready ? (int)MIN(sweet_media_bytes() / su.secsize, INT_MAX) : -1;
++}
++
++static u_int
++sweet_ufs_minphys(buf_t bp)
++{
++#if defined(SWEET_MERKLE_ROOT)
++    if (buf_count(bp) > VRMI_MAX_READ) buf_setcount(bp, VRMI_MAX_READ);
++#endif
++    return minphys(bp);
+ }
+ 
+ static int
+ sweet_ufs_read(dev_t dev, struct uio *uio, __unused int ioflag)
+ {
+-	return physio(sweet_ufs_strategy, NULL, dev, B_READ, minphys, uio, (int)su.secsize);
++	return physio(sweet_ufs_strategy, NULL, dev, B_READ, sweet_ufs_minphys, uio, (int)su.secsize);
+ }
+ 
+ static int
+@@ -554,7 +713,7 @@
+ 	if (!su.writable) {
+ 		return EROFS;
+ 	}
+-	return physio(sweet_ufs_strategy, NULL, dev, B_WRITE, minphys, uio, (int)su.secsize);
++	return physio(sweet_ufs_strategy, NULL, dev, B_WRITE, sweet_ufs_minphys, uio, (int)su.secsize);
+ }
+ 
+ static const struct bdevsw sweet_ufs_bdevsw = {
+@@ -587,6 +746,20 @@
+ static int
+ sweet_ufs_init(void)
+ {
++#if defined(SWEET_MERKLE_ROOT)
++    /* One-shot lifecycle: failed authentication/timeout cannot retry or reallocate. */
++    lck_mtx_lock(&sweet_ufs_lock);
++    if (sweet_init_started) {
++        lck_mtx_unlock(&sweet_ufs_lock);
++        return ENXIO;
++    }
++    sweet_init_started = true;
++    if (!sweet_policy) {
++        lck_mtx_unlock(&sweet_ufs_lock);
++        return ENXIO;
++    }
++    lck_mtx_unlock(&sweet_ufs_lock);
++#endif
+ 	DTEntry node;
+ 	uintptr_t const *reg = NULL;
+ 	unsigned int size = 0;
+@@ -630,9 +803,16 @@
+ 		for (int i = 0; i < 3 && (error = ufs_scsi(tur, sizeof(tur), 0, false)); i++) {
+ 		}
+ 	}
++#if defined(SWEET_MERKLE_ROOT)
++    if (!error) error = sweet_read_capacity();
++#endif
+ 	if (!error) {
+ 		error = ufs_find_partition(want);
+ 	}
++#if defined(SWEET_MERKLE_ROOT)
++    /* Mandatory real signature/policy check before ANY device publication. */
++    if (!error) error = sweet_merkle_authenticate();
++#endif
+ 	lck_mtx_unlock(&sweet_ufs_lock);
+ 	if (error) {
+ 		return error;
+@@ -650,10 +830,14 @@
+ 	devfs_make_node(su.bdev, DEVFS_BLOCK, UID_ROOT, GID_OPERATOR, 0640, "ufsroot0");
+ 	devfs_make_node(makedev(su.cmajor, 0), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0640, "rufsroot0");
+ 	/* Only now, with the partition bounds known, can writes be allowed. */
++#if defined(SWEET_MERKLE_ROOT)
++    su.writable = false; /* ufsrw is intentionally ignored */
++#else
+ 	su.writable = (rw != 0);
++#endif
+ 	su.ready = true;
+ 	printf("SWEET UFS: \"%s\" on LUN %u: first block 0x%llx, %llu MiB, %s, DMA at 0x%llx\n",
+-	    want, su.lun, su.first_block, su.nblocks * UFS_BLOCK >> 20,
++	    want, su.lun, su.first_block, sweet_media_bytes() >> 20,
+ 	    su.writable ? "read-write" : "read-only", su.dma_pa);
+ 	sweet_log_start();
+ 	sweet_sample_start();
+@@ -742,6 +926,9 @@
+ static void
+ sweet_log_thread(__unused void *arg, __unused wait_result_t wr)
+ {
++#if defined(SWEET_MERKLE_ROOT)
++    return; /* no persistent-log DMA or disk writes in authenticated mode */
++#endif
+ 	uint64_t base = su.first_block + su.nblocks - SWEET_LOG_BLOCKS;
+ 	uint64_t flushed = 0, seq = 0;
+ 	void *bounce = (void *)(su.dma + DMA_BOUNCE);
+@@ -799,6 +986,9 @@
+ void
+ sweet_log_panic_flush(void)
+ {
++#if defined(SWEET_MERKLE_ROOT)
++    return; /* no persistent-log DMA or disk writes in authenticated mode */
++#endif
+ 	uint64_t base, total, pos;
+ 	void *bounce;
+ 	int error = 0;
+@@ -843,6 +1033,9 @@
+ static void
+ sweet_log_start(void)
+ {
++#if defined(SWEET_MERKLE_ROOT)
++    return; /* no persistent-log DMA or disk writes in authenticated mode */
++#endif
+ 	uint32_t on = 1;
+ 	thread_t thread;
+ 
+--- /dev/null
++++ b/bsd/dev/sweet_merkle_policy.h
+@@ -0,0 +1,26 @@
++/* Non-deployment SWEET_MERKLE_ROOT candidate: private kernel-only interface. */
++#ifndef SWEET_MERKLE_POLICY_H
++#define SWEET_MERKLE_POLICY_H
++#include "verified_merkle_io.h"
++#if defined(SWEET_MERKLE_ROOT)
++/* Registration is NOT a trust establishment mechanism. Only a future protected
++ * bootset supplier may call it, before init, exactly once. No ADT/boot-arg keys.
++ * Supplier must establish bootset role pairing, anchor provenance, antirollback,
++ * protected immutable lifetime of this struct/envelope/crypto and callback ctx.
++ * All objects must be independent of DMA, vrmi handle, scratch and BSD output.
++ * Physical geometry is independently trusted; GPT agreement is only a check.
++ * This patch supplies NO such supplier, hence policy is NULL and init fails.
++ */
++struct sweet_merkle_policy {
++    const uint8_t *envelope;
++    size_t envelope_bytes;
++    uint8_t key[VR_KEY_BYTES];
++    uint8_t volume_uuid[16];
++    uint64_t min_generation, image_bytes;
++    uint64_t data_first, tree_first;
++    uint64_t partition_first, partition_blocks, lun_blocks;
++    struct vr_crypto crypto;
++};
++int sweet_merkle_register_protected_policy(const struct sweet_merkle_policy *);
++#endif
++#endif
+diff --git a/bsd/dev/verified_merkle.h b/bsd/dev/verified_merkle.h
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/verified_merkle.h
+@@ -0,0 +1,27 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent
++ * Experimental owner format, NOT Apple Image4 or a complete bootset. */
++#ifndef VERIFIED_MERKLE_H
++#define VERIFIED_MERKLE_H
++#include "verified_root.h"
++#define VRM_HEADER_BYTES 160u
++#define VRM_ENVELOPE_BYTES (160u+384u)
++#define VRM_MAX_BLOCKS (UINT64_C(1)<<32)
++#define VRM_MAX_PROOF 1024u
++struct vrm_view {
++    uint64_t image_bytes,block_count,generation;
++    uint8_t volume_uuid[16],image_sha256[32],root[32];
++    uint32_t height;
++};
++enum vrm_status { VRM_OK,VRM_FORMAT,VRM_KEY,VRM_SIGNATURE,VRM_PROOF,VRM_HASH };
++/* out is private, protected writable at open and immutable afterward. It must
++ * not alias inputs. Key is independently supplied, not selected from envelope.
++ * Providers return exactly 1 for success. No authentication state on failure. */
++int vrm_open(const uint8_t *,size_t,const uint8_t[VR_KEY_BYTES],uint64_t,
++             const struct vr_crypto *,struct vrm_view *);
++/* Data is one exact, stable CPU-owned block, partial only for the last block.
++ * Proof is UNTRUSTED, bottom-up siblings, exactly height*32 bytes. It need not
++ * remain protected across requests. No full tree is trusted or hashed here.
++ * Caller serializes view/crypto lifetime and stages data before delivery. */
++int vrm_verify_block(const struct vrm_view *,uint64_t,const void *,size_t,
++                     const void *,size_t,const struct vr_crypto *);
++#endif
+diff --git a/bsd/dev/verified_merkle.c b/bsd/dev/verified_merkle.c
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/verified_merkle.c
+@@ -0,0 +1,69 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++#include "verified_merkle.h"
++_Static_assert(VR_BLOCK_BYTES==4096u && VR_KEY_BYTES==395u,"Merkle crypto ABI");
++_Static_assert(sizeof(struct vrm_view)==112u,"arm64 Merkle view ABI");
++static uint64_t le(const uint8_t *p,unsigned n) {
++    uint64_t x=0;for(unsigned i=0;i<n;++i)x|=(uint64_t)p[i]<<(8*i);return x;
++}
++static void put(uint8_t *p,uint64_t x,unsigned n) {
++    for(unsigned i=0;i<n;++i)p[i]=(uint8_t)(x>>(8*i));
++}
++static int same(const uint8_t *a,const uint8_t *b,size_t n) {
++    uint8_t d=0;for(size_t i=0;i<n;++i)d|=a[i]^b[i];return d==0;
++}
++static void copy(uint8_t *d,const uint8_t *s,size_t n) {
++    for(size_t i=0;i<n;++i)d[i]=s[i];
++}
++static int geometry(uint64_t bytes,uint64_t count,uint32_t *height) {
++    if(!bytes || !count || count>VRM_MAX_BLOCKS ||
++       count!=bytes/VR_BLOCK_BYTES+(bytes%VR_BLOCK_BYTES!=0))return 0;
++    uint64_t leaves=1;*height=0;
++    while(leaves<count){leaves<<=1;++*height;}
++    return 1;
++}
++int vrm_open(const uint8_t *p,size_t n,const uint8_t key[VR_KEY_BYTES],
++             uint64_t minimum,const struct vr_crypto *crypto,struct vrm_view *out) {
++    static const uint8_t magic[8]={'V','R','O','O','T','0','2',0};
++    static const uint8_t km[8]={'V','R','O','O','T','K','E','Y'};
++    if(!out)return VRM_FORMAT;
++    *out=(struct vrm_view){0};
++    if(!p || n!=VRM_ENVELOPE_BYTES || !key || !minimum || !crypto ||
++       !crypto->sha256 || !crypto->rsa3072_sha256)return VRM_FORMAT;
++    uint8_t snapshot[VRM_ENVELOPE_BYTES];copy(snapshot,p,sizeof(snapshot));p=snapshot;
++    if(!same(p,magic,8) ||
++       le(p+8,4)!=2 || le(p+12,4)!=VRM_HEADER_BYTES ||
++       le(p+16,4)!=VR_BLOCK_BYTES || le(p+20,4)!=0)return VRM_FORMAT;
++    uint64_t bytes=le(p+24,8),count=le(p+32,8),gen=le(p+152,8);
++    uint32_t height;
++    if(!geometry(bytes,count,&height) || gen<minimum)return VRM_FORMAT;
++    uint8_t digest[32];
++    if(!same(key,km,8) || !(key[8]&0x80) || !(key[391]&1) ||
++       key[392]!=1 || key[393]!=0 || key[394]!=1 ||
++       crypto->sha256(key,VR_KEY_BYTES,digest)!=1 || !same(digest,p+120,32))return VRM_KEY;
++    if(crypto->sha256(p,VRM_HEADER_BYTES,digest)!=1 ||
++       crypto->rsa3072_sha256(key,digest,p+VRM_HEADER_BYTES)!=1)return VRM_SIGNATURE;
++    out->image_bytes=bytes;out->block_count=count;out->generation=gen;out->height=height;
++    copy(out->volume_uuid,p+40,16);copy(out->image_sha256,p+56,32);copy(out->root,p+88,32);
++    return VRM_OK;
++}
++int vrm_verify_block(const struct vrm_view *v,uint64_t index,const void *data,
++                     size_t n,const void *proof,size_t proof_bytes,const struct vr_crypto *crypto) {
++    uint32_t height;
++    if(!v || !crypto || !crypto->sha256 || !geometry(v->image_bytes,v->block_count,&height) ||
++       v->height!=height || index>=v->block_count || !data ||
++       proof_bytes!=(size_t)height*32 || (height && !proof))return VRM_PROOF;
++    uint64_t remain=v->image_bytes-index*VR_BLOCK_BYTES;
++    size_t wanted=remain<VR_BLOCK_BYTES?(size_t)remain:VR_BLOCK_BYTES;
++    if(n!=wanted)return VRM_PROOF;
++    uint8_t digest[32],leaf[45],node[65];const uint8_t *siblings=proof;
++    if(crypto->sha256(data,n,digest)!=1)return VRM_HASH;
++    leaf[0]=0;put(leaf+1,index,8);put(leaf+9,n,4);copy(leaf+13,digest,32);
++    if(crypto->sha256(leaf,sizeof(leaf),digest)!=1)return VRM_HASH;
++    for(uint32_t level=0;level<height;++level){
++        node[0]=1;
++        if((index>>level)&1){copy(node+1,siblings+level*32,32);copy(node+33,digest,32);}
++        else{copy(node+1,digest,32);copy(node+33,siblings+level*32,32);}
++        if(crypto->sha256(node,sizeof(node),digest)!=1)return VRM_HASH;
++    }
++    return same(digest,v->root,32)?VRM_OK:VRM_PROOF;
++}
+diff --git a/bsd/dev/verified_merkle_io.h b/bsd/dev/verified_merkle_io.h
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/verified_merkle_io.h
+@@ -0,0 +1,41 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++#ifndef VERIFIED_MERKLE_IO_H
++#define VERIFIED_MERKLE_IO_H
++#include "verified_merkle.h"
++#define VRMI_MAX_READ 65536u
++#define VRMI_CACHE_PAGES 32u
++#define VRMI_FIXED_WORKSPACE (4096u+VRM_MAX_PROOF+VRMI_CACHE_PAGES*4096u)
++#define VRMI_MAX_WORKSPACE (VRMI_FIXED_WORKSPACE+VRMI_MAX_READ)
++enum vrmi_status { VRMI_OK,VRMI_POLICY,VRMI_CLOSED,VRMI_RANGE,VRMI_WORKSPACE,VRMI_IO,VRMI_INTEGRITY,VRMI_READ_ONLY };
++/* Exactly one absolute READ10 4096-byte block. EVERY return, including failure,
++ * guarantees dst is caller-owned with no deferred CPU/DMA writes. Success ==1
++ * additionally means all4096 bytes are a stable valid snapshot. A hardware
++ * adapter must NEVER DMA into dst: use its own pinned bounce, copy only on
++ * confirmed completion, and quarantine that bounce on timeout until recovery.
++ * Poison blocks new commands but is NOT proof old DMA has stopped. Caller
++ * holds the sole hardware mutex; callback MUST NOT re-acquire it. */
++typedef int (*vrmi_block_fn)(void *,uint64_t,void *);
++struct vrmi {
++    struct vrm_view view;
++    struct vr_crypto crypto;
++    uint64_t data_first,tree_first,tree_blocks,partition_first,partition_blocks,lun_blocks;
++    vrmi_block_fn block;void *context;
++    int ready,transport_poisoned;
++};
++/* Zero-initialized private handle, protected key/crypto/context, nonalias inputs.
++ * Trusted policy supplies UUID/size and physical partition/region bounds.
++ * Authenticated root != bootset role pairing or secure boot. IO poison cannot
++ * be cleared by reopen; transport recovery requires independent lifecycle. */
++int vrmi_open(struct vrmi *,const uint8_t *,size_t,const uint8_t[VR_KEY_BYTES],uint64_t,
++               const uint8_t[16],uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,
++               const struct vr_crypto *,vrmi_block_fn,void *);
++/* Signed logical block * sector (512/1024/2048/4096). Entire request serialized;
++ * output unchanged on any failure. Scratch is independent protected writable
++ * memory, >=VRMI_FIXED_WORKSPACE+n, nonalias output/handle/context. Used scratch
++ * erased on success or IO/integrity failure; early range/workspace rejects do
++ * not touch it. Cache is UNTRUSTED and per-request; every data block still
++ * verifies its complete path against the private signed root. */
++int vrmi_read(struct vrmi *,int64_t,uint32_t,void *,size_t,void *,size_t);
++int vrmi_block_count(struct vrmi *,uint32_t,uint64_t *);
++int vrmi_write(struct vrmi *,uint64_t,const void *,size_t);
++#endif
+diff --git a/bsd/dev/verified_merkle_io.c b/bsd/dev/verified_merkle_io.c
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/verified_merkle_io.c
+@@ -0,0 +1,91 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++#include "verified_merkle_io.h"
++static void wipe(void *p,size_t n){volatile uint8_t *b=p;for(size_t i=0;i<n;++i)b[i]=0;}
++static void copy(void *d,const void *s,size_t n){uint8_t *a=d;const uint8_t *b=s;for(size_t i=0;i<n;++i)a[i]=b[i];}
++static int equal(const uint8_t *a,const uint8_t *b,size_t n){uint8_t d=0;for(size_t i=0;i<n;++i)d|=a[i]^b[i];return d==0;}
++static int overlaps(const void *a,size_t an,const void *b,size_t bn){
++    uintptr_t x=(uintptr_t)a,y=(uintptr_t)b;
++    if(an>UINTPTR_MAX-x || bn>UINTPTR_MAX-y)return 1;
++    return an && bn && x<y+bn && y<x+an;
++}
++static int sector_ok(uint32_t n){return n>=512 && n<=4096 && !(n&(n-1));}
++static int region(uint64_t first,uint64_t count,uint64_t pf,uint64_t pb,uint64_t lun){
++    if(!count || pf>=lun || !pb || pb>lun-pf || first<pf || first>=lun)return 0;
++    uint64_t rel=first-pf;
++    return rel<pb && count<=pb-rel && first<=UINT32_MAX && count-1<=UINT32_MAX-first;
++}
++int vrmi_open(struct vrmi *d,const uint8_t *env,size_t n,const uint8_t key[VR_KEY_BYTES],uint64_t minimum,
++               const uint8_t uuid[16],uint64_t bytes,uint64_t data_first,uint64_t tree_first,
++               uint64_t pf,uint64_t pb,uint64_t lun,const struct vr_crypto *crypto,vrmi_block_fn block,void *context){
++    if(!d)return VRMI_POLICY;
++    if(d->transport_poisoned)return VRMI_CLOSED;
++    wipe(d,sizeof(*d));
++    if(!uuid || !bytes || bytes%4096 || !crypto || !block)return VRMI_POLICY;
++    struct vrm_view v;
++    if(vrm_open(env,n,key,minimum,crypto,&v)!=VRM_OK || v.image_bytes!=bytes || !equal(v.volume_uuid,uuid,16))return VRMI_POLICY;
++    uint64_t leaves=UINT64_C(1)<<v.height,tree_bytes=leaves*64;
++    uint64_t data_blocks=bytes/4096,tree_blocks=tree_bytes/4096+(tree_bytes%4096!=0);
++    if(!region(data_first,data_blocks,pf,pb,lun) || !region(tree_first,tree_blocks,pf,pb,lun) ||
++       (data_first<tree_first+tree_blocks && tree_first<data_first+data_blocks))return VRMI_POLICY;
++    d->view=v;d->crypto=*crypto;d->data_first=data_first;d->tree_first=tree_first;d->tree_blocks=tree_blocks;
++    d->partition_first=pf;d->partition_blocks=pb;d->lun_blocks=lun;d->block=block;d->context=context;d->ready=1;
++    return VRMI_OK;
++}
++static int read_absolute(struct vrmi *d,uint64_t lba,void *dst){
++    if(d->transport_poisoned || !d->block || !region(lba,1,d->partition_first,d->partition_blocks,d->lun_blocks))return VRMI_IO;
++    if(d->block(d->context,lba,dst)!=1){d->transport_poisoned=1;d->ready=0;return VRMI_IO;}
++    return VRMI_OK;
++}
++struct cache {uint64_t page[VRMI_CACHE_PAGES];uint32_t count,next;};
++static int get_proof(struct vrmi *d,uint64_t index,uint8_t *proof,uint8_t *pages,struct cache *cache){
++    uint64_t node=(UINT64_C(1)<<d->view.height)+index;
++    for(uint32_t level=0;level<d->view.height;++level){
++        uint64_t offset=(node^1)*32,page=offset/4096;
++        if(page>=d->tree_blocks)return VRMI_INTEGRITY;
++        uint32_t slot;
++        for(slot=0;slot<cache->count;++slot)if(cache->page[slot]==page)break;
++        if(slot==cache->count){
++            if(cache->count<VRMI_CACHE_PAGES)++cache->count;
++            else{slot=cache->next;cache->next=(cache->next+1)%VRMI_CACHE_PAGES;}
++            int rc=read_absolute(d,d->tree_first+page,pages+(size_t)slot*4096);
++            if(rc!=VRMI_OK)return rc;
++            cache->page[slot]=page;
++        }
++        copy(proof+(size_t)level*32,pages+(size_t)slot*4096+(size_t)(offset%4096),32);node/=2;
++    }
++    return VRMI_OK;
++}
++int vrmi_read(struct vrmi *d,int64_t logical,uint32_t sector,void *out,size_t n,void *scratch,size_t scratch_bytes){
++    if(!d || !d->ready || d->transport_poisoned)return VRMI_CLOSED;
++    if(logical<0 || !sector_ok(sector) || (uint64_t)logical>UINT64_MAX/sector || n>VRMI_MAX_READ)return VRMI_RANGE;
++    uint64_t offset=(uint64_t)logical*sector;
++    if(offset>d->view.image_bytes || (uint64_t)n>d->view.image_bytes-offset)return VRMI_RANGE;
++    if(!n)return VRMI_OK;
++    size_t used=VRMI_FIXED_WORKSPACE+n;
++    if(!out || !scratch || scratch_bytes<used || overlaps(out,n,scratch,used) ||
++       overlaps(out,n,d,sizeof(*d)) || overlaps(scratch,used,d,sizeof(*d)))return VRMI_WORKSPACE;
++    uint8_t *data=scratch,*proof=data+4096,*pages=proof+VRM_MAX_PROOF,*staged=pages+VRMI_CACHE_PAGES*4096;
++    struct cache cache={0};size_t done=0;int status=VRMI_OK;
++    while(done<n){
++        uint64_t pos=offset+done,index=pos/4096;size_t within=(size_t)(pos%4096),take=4096-within;
++        if(take>n-done)take=n-done;
++        status=read_absolute(d,d->data_first+index,data);if(status!=VRMI_OK)goto failed;
++        status=get_proof(d,index,proof,pages,&cache);if(status!=VRMI_OK)goto failed;
++        if(vrm_verify_block(&d->view,index,data,4096,proof,(size_t)d->view.height*32,&d->crypto)!=VRM_OK){status=VRMI_INTEGRITY;goto failed;}
++        copy(staged+done,data+within,take);done+=take;
++    }
++    copy(out,staged,n);wipe(scratch,used);return VRMI_OK;
++failed:
++    d->ready=0;wipe(scratch,used);return status;
++}
++int vrmi_block_count(struct vrmi *d,uint32_t sector,uint64_t *out){
++    if(!out)return VRMI_POLICY;
++    if(d && overlaps(out,sizeof(*out),d,sizeof(*d)))return VRMI_WORKSPACE;
++    *out=0;
++    if(!d || !d->ready || d->transport_poisoned)return VRMI_CLOSED;
++    if(!sector_ok(sector))return VRMI_RANGE;
++    *out=d->view.image_bytes/sector;return VRMI_OK;
++}
++int vrmi_write(struct vrmi *d,uint64_t offset,const void *src,size_t n){
++    (void)d;(void)offset;(void)src;(void)n;return VRMI_READ_ONLY;
++}
+diff --git a/bsd/dev/verified_root.h b/bsd/dev/verified_root.h
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/verified_root.h
+@@ -0,0 +1,39 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++#ifndef VERIFIED_ROOT_H
++#define VERIFIED_ROOT_H
++#include <stddef.h>
++#include <stdint.h>
++#ifdef __cplusplus
++extern "C" {
++#endif
++#define VR_HEADER_BYTES 160u
++#define VR_SIGNATURE_BYTES 384u
++#define VR_KEY_BYTES 395u
++#define VR_BLOCK_BYTES 4096u
++
++enum vr_status { VR_OK, VR_FORMAT, VR_KEY, VR_SIGNATURE, VR_HASH_TABLE, VR_BLOCK };
++/* Every provider MUST return exactly 1 on success; 0, negative and all other
++ * values are errors. Never forward unnormalized EVP error codes as success. */
++struct vr_crypto {
++    int (*sha256)(const void *, size_t, uint8_t[32]);
++    int (*rsa3072_sha256)(const uint8_t[VR_KEY_BYTES], const uint8_t[32], const uint8_t[VR_SIGNATURE_BYTES]);
++};
++struct vr_view {
++    const uint8_t *hashes;
++    uint64_t image_bytes, block_count, generation;
++    uint8_t volume_uuid[16], image_sha256[32];
++};
++/* Trusted key is supplied independently of the untrusted envelope. Both buffers
++ * must remain immutable for the lifetime of the returned authenticated view. */
++int vr_open(const uint8_t *, size_t, const uint8_t[VR_KEY_BYTES], uint64_t,
++            const struct vr_crypto *, struct vr_view *);
++/* Authenticate only the signed header (exactly VR_HEADER_BYTES + VR_SIGNATURE_BYTES); the view has no
++ * hashes. vr_open must still authenticate the full envelope before any block is verified. */
++int vr_open_header(const uint8_t *, size_t, const uint8_t[VR_KEY_BYTES], uint64_t,
++                   const struct vr_crypto *, struct vr_view *);
++int vr_verify_block(const struct vr_view *, uint64_t, const void *, size_t,
++                    const struct vr_crypto *);
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/bsd/dev/verified_root_xnu_crypto.c b/bsd/dev/verified_root_xnu_crypto.c
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/verified_root_xnu_crypto.c
+@@ -0,0 +1,23 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++#include "verified_root.h"
++#include <libkern/crypto/sha2.h>
++#include <libkern/crypto/rsa.h>
++#include <corecrypto/ccsha2.h>
++
++static int hash(const void *data, size_t n, uint8_t out[32]) {
++    SHA256_CTX context;
++    SHA256_Init(&context);
++    SHA256_Update(&context, data, n);
++    SHA256_Final(out, &context);
++    return 1;
++}
++static int verify(const uint8_t key[VR_KEY_BYTES], const uint8_t digest[32], const uint8_t signature[VR_SIGNATURE_BYTES]) {
++    rsa_pub_ctx public_key = {0};
++    bool valid = false;
++    int error = rsa_make_pub(&public_key, 3, key + 392, 384, key + 8);
++    if (error) return 0;
++    error = rsa_verify_pkcs1v15(&public_key, ccoid_sha256, 32, digest,
++                               VR_SIGNATURE_BYTES, signature, &valid);
++    return error == 0 && valid;
++}
++const struct vr_crypto vr_xnu_crypto = {hash, verify};
+diff --git a/bsd/conf/files b/bsd/conf/files
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -106,4 +106,7 @@
+ bsd/dev/memdev.c			standard
+ bsd/dev/sweet_ufs.c			standard
++bsd/dev/verified_merkle.c			standard
++bsd/dev/verified_merkle_io.c		standard
++bsd/dev/verified_root_xnu_crypto.c	standard
+ bsd/dev/sweet_sample.c			standard
+ bsd/dev/sweet_keys.c			standard

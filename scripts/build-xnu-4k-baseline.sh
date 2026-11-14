@@ -182,6 +182,15 @@ if [ "$(uname -s)" = Linux ]; then
 fi
 # The baseline builds the kernel; `all` also checks the Apple kext export ABI.
 EXTRA_MAKE_ARGS=()
+# Experimental compile gate; no policy supplier, key, metadata or device deployment.
+SWEET_MERKLE_MODE=${XNU_SWEET_MERKLE_ROOT:-0}
+case "$SWEET_MERKLE_MODE" in 0|1) ;; *) echo 'XNU_SWEET_MERKLE_ROOT must be 0 or 1' >&2; exit 1;; esac
+if [ "$SWEET_MERKLE_MODE" = 1 ]; then
+  if [ "$XNU_MACHINE_CONFIG" != SWEET ] || [ "${XNU_SOURCE_CORECRYPTO14:-0}" != 1 ]; then
+    echo 'SWEET Merkle build requires SWEET and real source crypto' >&2; exit 1
+  fi
+  EXTRA_MAKE_ARGS+=("sweet_ufs.o_CFLAGS_ADD=-DSWEET_MERKLE_ROOT=1")
+fi
 # A fileset boot replaces com.apple.kernel inside a kernel collection: the
 # native executable must carry chained fixups and split-segment records.
 EXTRA_MAKE_ARGS+=("XNU_KERNEL_CHAINED_FIXUPS=${XNU_KERNEL_CHAINED_FIXUPS:-0}")
