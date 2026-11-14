@@ -213,6 +213,24 @@ if [ "$CRYPTO_BOOTSTRAP_MODE" != source ] && [ "$CRYPTO_BOOTSTRAP_MODE" != preli
   echo 'XNU_CRYPTO_BOOTSTRAP must be source or prelinked' >&2
   exit 1
 fi
+# BEGIN SWEET_MERKLE_OBJECT_IDENTITY
+# Per-object _CFLAGS_ADD is absent from XNU's common .CFLAGS dependency stamp.
+# Refuse cross-mode incremental reuse instead of silently using a stale driver.
+if [ "$XNU_MACHINE_CONFIG" = SWEET ]; then
+  SWEET_MODE_DIR=$ROOT/build/xnu/ios-obj/DEVELOPMENT_ARM64_$XNU_MACHINE_CONFIG
+  SWEET_MODE_STAMP=$SWEET_MODE_DIR/.sweet-merkle-mode
+  SWEET_PREVIOUS_MODE=$(cat "$SWEET_MODE_STAMP" 2>/dev/null || printf unknown)
+  if { [ -f "$SWEET_MODE_DIR/bsd/DEVELOPMENT/sweet_ufs.o" ] || \
+       [ -f "$SWEET_MODE_DIR/mach.development.sweet" ] || \
+       [ -f "$SWEET_MODE_DIR/kernel.development.sweet" ]; } && \
+       [ "$SWEET_PREVIOUS_MODE" != "$SWEET_MERKLE_MODE" ]; then
+    echo 'Refuse stale SWEET Merkle object mode; use a fresh OBJROOT' >&2
+    exit 1
+  fi
+  mkdir -p "$SWEET_MODE_DIR"
+  printf '%s\n' "$SWEET_MERKLE_MODE" > "$SWEET_MODE_STAMP"
+fi
+# END SWEET_MERKLE_OBJECT_IDENTITY
 CRYPTO_OBJECT_DIR=$ROOT/build/xnu/ios-obj/DEVELOPMENT_ARM64_$XNU_MACHINE_CONFIG/osfmk/DEVELOPMENT
 if [ -d "$CRYPTO_OBJECT_DIR" ]; then
   if [ "$(cat "$CRYPTO_OBJECT_DIR/.crypto-bootstrap-mode" 2>/dev/null || echo source)" != "$CRYPTO_BOOTSTRAP_MODE" ]; then
