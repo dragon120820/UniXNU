@@ -277,7 +277,29 @@ if [ "$MOCKFS_MODE" != 0 ] && [ "$MOCKFS_MODE" != 1 ]; then
   echo 'XNU_SOURCE_MOCKFS must be 0 or 1' >&2
   exit 1
 fi
-if [ "$MOCKFS_MODE" = 1 ] && { [ "${XNU_ARMCPU:-0}" != 1 ] || [ "${XNU_SOURCE_PTHREAD:-0}" != 1 ]; }; then
+# Select one real pthread owner. SWEET's matching provider is compiled in XNU;
+# other devices keep the existing source archive. Never force-load both copies.
+SWEET_PTHREAD_MODE=${XNU_BUILTIN_SWEET_PTHREAD:-0}
+case "$SWEET_PTHREAD_MODE" in
+  0|1) ;;
+  *) echo 'XNU_BUILTIN_SWEET_PTHREAD must be 0 or 1' >&2; exit 1 ;;
+esac
+SWEET_PTHREAD_SOURCE=$ROOT/.cache/xnu-work/bsd/pthread/sweet_pthread_init.c
+if [ "$XNU_MACHINE_CONFIG" = SWEET ] && [ "${XNU_SOURCE_PTHREAD:-0}" = 1 ] && [ -f "$SWEET_PTHREAD_SOURCE" ]; then
+  echo 'SWEET built-in and archive pthread providers would both register' >&2
+  exit 1
+fi
+if [ "$SWEET_PTHREAD_MODE" = 1 ]; then
+  if [ "$XNU_MACHINE_CONFIG" != SWEET ] || [ "$XNU_VERSION" != 8796.141.3 ] || [ "${XNU_SOURCE_PTHREAD:-0}" != 0 ]; then
+    echo 'SWEET built-in pthread requires SWEET/8796.141.3 and no archive provider' >&2
+    exit 1
+  fi
+  if [ ! -f "$SWEET_PTHREAD_SOURCE" ] || ! grep -Fq 'STARTUP(EARLY_BOOT, STARTUP_RANK_SECOND, sweet_pthread_register)' "$SWEET_PTHREAD_SOURCE"; then
+    echo 'Selected SWEET pthread provider source/startup is missing' >&2
+    exit 1
+  fi
+fi
+if [ "$MOCKFS_MODE" = 1 ] && { [ "${XNU_ARMCPU:-0}" != 1 ] || { [ "${XNU_SOURCE_PTHREAD:-0}" != 1 ] && [ "$SWEET_PTHREAD_MODE" != 1 ]; }; }; then
   echo 'The offline executable-root fixture requires the real CPU/pthread components' >&2
   exit 1
 fi
