@@ -1,0 +1,363 @@
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -1043,5 +1043,9 @@
+     {
+         extern int sweet_owner_publish_mounted_root(void);
+-        int owner_error = sweet_owner_publish_mounted_root();
++        extern int sweet_owner_prepare_data(void);
++        int owner_error = sweet_owner_prepare_data();
++        if (owner_error == 0) {
++            owner_error = sweet_owner_publish_mounted_root();
++        }
+         if (owner_error != 0) {
+             panic("SWEET owner: final mounted root publication refused: %d", owner_error);
+diff --git a/bsd/conf/files b/bsd/conf/files
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -110,4 +110,5 @@
+ bsd/dev/verified_root_xnu_crypto.c	standard
+ bsd/dev/sweet_owner_policy.c		standard
++bsd/dev/sweet_owner_data.c		standard
+ bsd/dev/sweet_owner_publish.cpp		standard
+ bsd/dev/sweet_sample.c			standard
+diff --git a/bsd/vfs/vfs_syscalls.c b/bsd/vfs/vfs_syscalls.c
+--- a/bsd/vfs/vfs_syscalls.c
++++ b/bsd/vfs/vfs_syscalls.c
+@@ -278,4 +278,83 @@
+  */
+ 
++#if SWEET_MERKLE_ROOT
++/* TU-private capability: never part of syscall flags or an exported header. */
++#define SWEET_KERNEL_MOUNT_DATA 0x80000000U
++_Static_assert((SWEET_KERNEL_MOUNT_DATA & (KERNEL_MOUNT_NOAUTH |
++    KERNEL_MOUNT_PERMIT_UNMOUNT | KERNEL_MOUNT_SNAPSHOT |
++    KERNEL_MOUNT_VOLBYROLE_MASK | KERNEL_MOUNT_BASESYSTEMROOT |
++    KERNEL_MOUNT_DEVFS | KERNEL_MOUNT_FMOUNT | KERNEL_MOUNT_KMOUNT)) == 0,
++    "sweet mount internal flag collision");
++extern dev_t mdevlookup(int devid);
++__private_extern__ int sweet_kernel_mount_data(dev_t expected_device);
++
++/*
++ * Early boot only: caller has registered md15, holds its backing storage alive,
++ * and has not started userspace or concurrent namespace/devfs/mdev mutation.
++ * No path, data address or mount flags can be supplied by the caller.
++ */
++__private_extern__
++int
++sweet_kernel_mount_data(dev_t expected_device)
++{
++	vfs_context_t ctx = vfs_context_kernel();
++	struct nameidata nd, verify_nd;
++	vnode_t vp, pvp, rootvp;
++	mount_t mp;
++	int error;
++	boolean_t verified;
++
++	if (expected_device == (dev_t)-1 ||
++	    expected_device != mdevlookup(15)) {
++		return ENXIO;
++	}
++	NDINIT(&nd, LOOKUP, OP_MOUNT, FOLLOW | WANTPARENT,
++	    UIO_SYSSPACE, CAST_USER_ADDR_T("/private/var"), ctx);
++	nd.ni_flag |= NAMEI_NOFOLLOW_ANY;
++	error = namei(&nd);
++	if (error != 0) {
++		return error;
++	}
++	vp = nd.ni_vp;
++	pvp = nd.ni_dvp;
++	if (vp->v_type != VDIR) {
++		error = ENOTDIR;
++	} else if ((vp->v_flag & (VROOT | VMOUNT)) ||
++	    vp->v_mountedhere != NULL) {
++		error = EBUSY;
++	} else {
++		/* Fixed fresh RW HFS mount; filesystem-specific data stays NULL. */
++		error = mount_common("hfs", pvp, vp, &nd.ni_cnd, USER_ADDR_NULL,
++		    0, KERNEL_MOUNT_KMOUNT | SWEET_KERNEL_MOUNT_DATA, NULL, ctx);
++	}
++	if (error == 0) {
++		/* Published mount: a failed invariant is fatal, never retry/fallback. */
++		mp = vp->v_mountedhere;
++		verified = FALSE;
++		NDINIT(&verify_nd, LOOKUP, OP_LOOKUP, FOLLOW,
++		    UIO_SYSSPACE, CAST_USER_ADDR_T("/private/var"), ctx);
++		verify_nd.ni_flag |= NAMEI_NOFOLLOW_ANY;
++		if (namei(&verify_nd) == 0) {
++			rootvp = verify_nd.ni_vp;
++			verified = mp != NULL && rootvp->v_mount == mp &&
++			    (rootvp->v_flag & VROOT) && mp->mnt_vnodecovered == vp &&
++			    strcmp(mp->mnt_vtable->vfc_name, "hfs") == 0 &&
++			    !(mp->mnt_flag & MNT_RDONLY) && mp->mnt_devvp != NULL &&
++			    mp->mnt_devvp->v_type == VBLK &&
++			    mp->mnt_devvp->v_rdev == expected_device &&
++			    mdevlookup(15) == expected_device;
++			vnode_put(rootvp);
++			nameidone(&verify_nd);
++		}
++		if (!verified) {
++			panic("sweet_kernel_mount_data: published mount invariant failed");
++		}
++	}
++	vnode_put(vp);
++	vnode_put(pvp);
++	nameidone(&nd);
++	return error;
++}
++#endif /* SWEET_MERKLE_ROOT */
+ /*
+  * Private in-kernel mounting spi (specific use-cases only)
+@@ -301,4 +380,8 @@
+ 
+ 	kern_flags &= KERNEL_MOUNT_SANITIZE_MASK;
++#if SWEET_MERKLE_ROOT
++	/* Only sweet_kernel_mount_data may create this capability. */
++	kern_flags &= ~SWEET_KERNEL_MOUNT_DATA;
++#endif
+ 
+ 	/*
+@@ -1030,4 +1113,14 @@
+ 	boolean_t kernelmount = !!(internal_flags & KERNEL_MOUNT_KMOUNT);
+ 
++#if SWEET_MERKLE_ROOT
++	if (internal_flags & SWEET_KERNEL_MOUNT_DATA) {
++		if (internal_flags != (KERNEL_MOUNT_KMOUNT | SWEET_KERNEL_MOUNT_DATA) ||
++		    flags != 0 || fsmountargs != USER_ADDR_NULL || labelstr != NULL ||
++		    ctx != vfs_context_kernel() || strcmp(fstypename, "hfs") != 0 ||
++		    mdevlookup(15) == (dev_t)-1) {
++			return EINVAL;
++		}
++	}
++#endif
+ #if CONFIG_ROSV_STARTUP || CONFIG_MOUNT_VM || CONFIG_BASESYSTEMROOT
+ 	/* Check for mutually-exclusive flag bits */
+@@ -1168,4 +1261,11 @@
+ 	}
+ 
++#if SWEET_MERKLE_ROOT
++	if ((internal_flags & SWEET_KERNEL_MOUNT_DATA) &&
++	    !(vfsp->vfc_vfsflags & VFC_VFSLOCALARGS)) {
++		error = EINVAL;
++		goto out1;
++	}
++#endif
+ 	/*
+ 	 * VFC_VFSLOCALARGS is not currently supported for kernel mounts,
+@@ -1174,4 +1274,7 @@
+ 	if (kernelmount && (vfsp->vfc_vfsflags & VFC_VFSLOCALARGS) &&
+ 	    ((internal_flags & KERNEL_MOUNT_VOLBYROLE_MASK) == 0) &&
++#if SWEET_MERKLE_ROOT
++	    ((internal_flags & SWEET_KERNEL_MOUNT_DATA) == 0) &&
++#endif
+ 	    ((internal_flags & KERNEL_MOUNT_BASESYSTEMROOT) == 0)) {
+ 		error = EINVAL;  /* unsupported request */
+@@ -1308,4 +1411,12 @@
+ 	    !(internal_flags & (KERNEL_MOUNT_SNAPSHOT | KERNEL_MOUNT_VOLBYROLE_MASK))) {
+ 		boolean_t do_copyin_devpath = true;
++#if SWEET_MERKLE_ROOT
++		if (internal_flags & SWEET_KERNEL_MOUNT_DATA) {
++			/* No caller address is unpacked; HFS must see NULL data. */
++			devpath = CAST_USER_ADDR_T("/dev/md15");
++			do_copyin_devpath = false;
++			fsmountargs = USER_ADDR_NULL;
++		}
++#endif
+ #if CONFIG_BASESYSTEMROOT
+ 		if (internal_flags & KERNEL_MOUNT_BASESYSTEMROOT) {
+@@ -1352,4 +1463,9 @@
+ 
+ 			enum uio_seg seg = UIO_USERSPACE;
++#if SWEET_MERKLE_ROOT
++			if (internal_flags & SWEET_KERNEL_MOUNT_DATA) {
++				seg = UIO_SYSSPACE;
++			}
++#endif
+ #if CONFIG_BASESYSTEMROOT
+ 			if (internal_flags & KERNEL_MOUNT_BASESYSTEMROOT) {
+@@ -1359,4 +1475,9 @@
+ 
+ 			NDINIT(&nd, LOOKUP, OP_MOUNT, FOLLOW, seg, devpath, ctx);
++#if SWEET_MERKLE_ROOT
++			if (internal_flags & SWEET_KERNEL_MOUNT_DATA) {
++				nd.ni_flag |= NAMEI_NOFOLLOW_ANY;
++			}
++#endif
+ 			if ((error = namei(&nd))) {
+ 				goto out1;
+@@ -1372,4 +1493,11 @@
+ 				goto out2;
+ 			}
++#if SWEET_MERKLE_ROOT
++			if ((internal_flags & SWEET_KERNEL_MOUNT_DATA) &&
++			    devvp->v_rdev != mdevlookup(15)) {
++				error = ENXIO;
++				goto out2;
++			}
++#endif
+ 			if (major(devvp->v_rdev) >= nblkdev) {
+ 				error = ENXIO;
+diff --git a/bsd/dev/sweet_owner_data.c b/bsd/dev/sweet_owner_data.c
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/sweet_owner_data.c
+@@ -0,0 +1,159 @@
++/* Source-owned DEVELOPMENT Data seed. Before init, serialized, no pivots/remounts.
++ * Not wired to a build yet. The signed root must contain this exact seed first.
++ * Never frees backing after attempting mdevadd: it may have partially published.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET) && defined(SWEET_MERKLE_ROOT)
++#include <sys/types.h>
++#include <sys/param.h>
++#include <sys/errno.h>
++#include <sys/mount.h>
++#include <sys/vnode.h>
++#include <sys/vnode_internal.h>
++#include <sys/file.h>
++#include <sys/uio.h>
++#include <sys/conf.h>
++#include <kern/kalloc.h>
++#include <libkern/libkern.h>
++#include <libkern/crypto/sha2.h>
++#include <stdbool.h>
++
++extern dev_t mdevadd(int, uint64_t, unsigned int, int);
++extern dev_t mdevlookup(int);
++extern int sweet_owner_mounted_identity(dev_t, const uint8_t[16], uint8_t[48]);
++extern int sweet_kernel_mount_data(dev_t);
++#define OWNER_DATA_BYTES ((size_t)1073741824)
++#define OWNER_DATA_CHUNK ((size_t)65536)
++static const char owner_seed_path[] = "/usr/standalone/owner/data.hfsx";
++static const uint8_t owner_seed_sha[32] = {
++ 0xed,0x74,0xaf,0xa9,0x85,0x29,0xf9,0x86,0xf0,0x09,0x3f,0x8a,0xa0,0xeb,0xc5,0x69,
++ 0x8a,0x3c,0x2d,0x46,0xb5,0x65,0x43,0x0e,0x86,0x55,0x8d,0x02,0xb4,0x18,0xf9,0x91
++};
++static const uint8_t owner_data_uuid[16] = {
++ 0x3f,0xf6,0xab,0x99,0x8e,0x90,0x3c,0xee,0x9c,0xc9,0x30,0x59,0x2a,0xe9,0xc8,0x05
++};
++/* Runtime BSS, deliberately NOT late-RO: all writes occur after lockdown. */
++static bool owner_data_called;
++static void *owner_data_backing;
++
++static int
++owner_fs_uuid(mount_t mp, uint8_t uuid[16])
++{
++ struct vfs_attr a;
++ bzero(&a,sizeof(a)); VFSATTR_INIT(&a); VFSATTR_WANTED(&a,f_uuid);
++ int e=vfs_getattr(mp,&a,vfs_context_kernel());
++ if(e) return e;
++ if(!VFSATTR_IS_SUPPORTED(&a,f_uuid)) return EOPNOTSUPP;
++ memcpy(uuid,a.f_uuid,16); return 0;
++}
++
++static int
++owner_root_valid(vnode_t root,mount_t mp,vnode_t devvp,dev_t dev,
++ const uint8_t uuid[16],const uint8_t expected[48])
++{
++ uint8_t actual[16],digest[48];
++ vnode_t now=vfs_rootvnode();
++ if(now==NULLVP) return ENXIO;
++ bool same=now==root && vnode_mount(now)==mp && vnode_vtype(now)==VDIR;
++ vnode_put(now);
++ if(!same || vnode_mount(root)!=mp) return ESTALE;
++ const struct vfsstatfs *s=vfs_statfs(mp);
++ if(!s || strncmp(s->f_fstypename,"hfs",sizeof(s->f_fstypename)) || !(vfs_flags(mp)&MNT_RDONLY)) return EROFS;
++ vnode_t d=vfs_devvp(mp);
++ if(d==NULLVP) return ENXIO;
++ same=d==devvp && vnode_vtype(d)==VBLK && vnode_specrdev(d)==dev;
++ vnode_put(d);
++ if(!same) return ESTALE;
++ int e=owner_fs_uuid(mp,actual);
++ if(e || memcmp(actual,uuid,16)) return e ? e : ESTALE;
++ e=sweet_owner_mounted_identity(dev,uuid,digest);
++ if(e || memcmp(digest,expected,48)) { bzero(digest,sizeof(digest)); return e ? e : ESTALE; }
++ bzero(digest,sizeof(digest)); return 0;
++}
++
++/* Actual held-vnode IO loop, extracted unchanged for host failure tests. */
++static int
++owner_read_seed(vnode_t seed,void *buffer,size_t bytes,vfs_context_t ctx)
++{
++ size_t offset=0;
++ while(offset<bytes) {
++  size_t n=bytes-offset;
++  if(n>OWNER_DATA_CHUNK) n=OWNER_DATA_CHUNK;
++  int residual=0;
++  int e=vn_rdwr(UIO_READ,seed,(caddr_t)buffer+offset,(int)n,(off_t)offset,
++   UIO_SYSSPACE,IO_NODELOCKED|IO_NOCACHE|IO_RAOFF,vfs_context_ucred(ctx),
++   &residual,vfs_context_proc(ctx));
++  if(e || residual!=0) return e ? e : EIO;
++  offset+=n;
++ }
++ return 0;
++}
++
++int
++sweet_owner_prepare_data(void)
++{
++ if(owner_data_called) return EALREADY;
++ owner_data_called=true;
++ int e=ENXIO; bool busy=false,opened=false,handed=false;
++ vnode_t root=NULLVP,devvp=NULLVP,seed=NULLVP,data=NULLVP;
++ mount_t mp=NULL; void *buffer=NULL; off_t size=0;
++ dev_t dev=NODEV,md=NODEV;
++ uint8_t uuid[16]={0},digest[48]={0},actual_sha[32]={0};
++ SHA256_CTX hash;
++ bzero(&hash,sizeof(hash));
++ vfs_context_t ctx=vfs_context_kernel();
++ root=vfs_rootvnode(); if(root==NULLVP) goto out;
++ mp=vnode_mount(root); if(mp==NULL) goto out;
++ e=vfs_busy(mp,LK_NOWAIT); if(e) goto out; busy=true;
++ devvp=vfs_devvp(mp); if(devvp==NULLVP || vnode_vtype(devvp)!=VBLK) {e=ENXIO;goto out;}
++ dev=vnode_specrdev(devvp);
++ e=owner_fs_uuid(mp,uuid); if(e) goto out;
++ e=sweet_owner_mounted_identity(dev,uuid,digest); if(e) goto out;
++ e=owner_root_valid(root,mp,devvp,dev,uuid,digest); if(e) goto out;
++ if(mdevlookup(15)!=(dev_t)-1) {e=EBUSY;goto out;}
++ e=vnode_lookup(owner_seed_path,VNODE_LOOKUP_NOFOLLOW|VNODE_LOOKUP_NOCROSSMOUNT,&seed,ctx);
++ if(e) goto out;
++ if(vnode_vtype(seed)!=VREG || vnode_mount(seed)!=mp) {e=EXDEV;goto out;}
++ e=vnode_size(seed,&size,ctx); if(e) goto out;
++ if(size<0 || (uint64_t)size!=OWNER_DATA_BYTES) {e=EINVAL;goto out;}
++ e=VNOP_OPEN(seed,FREAD,ctx); if(e) goto out; opened=true;
++ buffer=kalloc_data(OWNER_DATA_BYTES,Z_WAITOK);
++ if(buffer==NULL) {e=ENOMEM;goto out;}
++ if(((uintptr_t)buffer&4095)!=0) {e=EINVAL;goto out;}
++ e=owner_read_seed(seed,buffer,OWNER_DATA_BYTES,ctx); if(e) goto out;
++ SHA256_Init(&hash); SHA256_Update(&hash,buffer,OWNER_DATA_BYTES); SHA256_Final(actual_sha,&hash);
++ if(memcmp(actual_sha,owner_seed_sha,32)) {e=EAUTH;goto out;}
++ e=vnode_size(seed,&size,ctx); if(e) goto out;
++ if(size!=(off_t)OWNER_DATA_BYTES || vnode_vtype(seed)!=VREG || vnode_mount(seed)!=mp) {e=ESTALE;goto out;}
++ e=owner_root_valid(root,mp,devvp,dev,uuid,digest); if(e) goto out;
++ e=VNOP_CLOSE(seed,FREAD,ctx); opened=false; if(e) goto out;
++ /* Publish only after all authentication. Own until reboot even on partial add. */
++ owner_data_backing=buffer; handed=true;
++ md=mdevadd(15,(uint64_t)(uintptr_t)buffer>>12,(unsigned int)(OWNER_DATA_BYTES>>12),0);
++ if(md==(dev_t)-1 || mdevlookup(15)!=md) {e=ENXIO;goto out;}
++ e=sweet_kernel_mount_data(md); if(e) goto out;
++ e=vnode_lookup("/private/var",VNODE_LOOKUP_NOFOLLOW,&data,ctx); if(e) goto out;
++ mount_t data_mp=vnode_mount(data);
++ const struct vfsstatfs *s=data_mp ? vfs_statfs(data_mp) : NULL;
++ if(vnode_vtype(data)!=VDIR || !vnode_isvroot(data) || data_mp==mp || !s || strncmp(s->f_fstypename,"hfs",sizeof(s->f_fstypename)) || (vfs_flags(data_mp)&MNT_RDONLY)) {e=EINVAL;goto out;}
++ vnode_t data_dev=vfs_devvp(data_mp);
++ if(data_dev==NULLVP) {e=ENXIO;goto out;}
++ bool same=vnode_vtype(data_dev)==VBLK && vnode_specrdev(data_dev)==md;
++ vnode_put(data_dev);
++ if(!same) {e=EXDEV;goto out;}
++ uint8_t mounted_uuid[16];
++ e=owner_fs_uuid(data_mp,mounted_uuid);
++ if(e || memcmp(mounted_uuid,owner_data_uuid,16)) {if(!e)e=ESTALE;goto out;}
++ e=owner_root_valid(root,mp,devvp,dev,uuid,digest);
++out:
++ if(opened) {int close_error=VNOP_CLOSE(seed,FREAD,ctx);if(!e)e=close_error;}
++ if(data!=NULLVP) vnode_put(data);
++ if(seed!=NULLVP) vnode_put(seed);
++ if(devvp!=NULLVP) vnode_put(devvp);
++ if(busy) vfs_unbusy(mp);
++ if(root!=NULLVP) vnode_put(root);
++ if(buffer!=NULL && !handed) {bzero(buffer,OWNER_DATA_BYTES);kfree_data(buffer,OWNER_DATA_BYTES);}
++ bzero(&hash,sizeof(hash));bzero(actual_sha,sizeof(actual_sha));bzero(digest,sizeof(digest));
++ /* Caller MUST panic on any failure; no init/retry after partial md or mount. */
++ return e;
++}
++#endif
