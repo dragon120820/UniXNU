@@ -1,0 +1,16 @@
+--- a/osfmk/arm/pmap/pmap.c
++++ b/osfmk/arm/pmap/pmap.c
+@@ -2541,3 +2541,13 @@
+ 		*startp = LOW_GLOBAL_BASE_ADDRESS;
++#if defined(SWEET) && (ARM_PGSHIFT == 14)
++		/* Match sweet_early_map_final: low globals plus its next L2 block.
++		 * The manual PTE alone does not reserve VA from kernel_map users.
++		 * kmem_init installs this whole interval FIXED_PERMANENT/PROT_NONE.
++		 */
++		*size = 2 * ARM_TT_L2_SIZE;
++		assert(*size >= low_global_vr_size);
++		assert(*startp + *size <= (gVirtBase & low_global_vr_mask));
++#else
+ 		*size = low_global_vr_size;
++#endif
+ 		ret = TRUE;

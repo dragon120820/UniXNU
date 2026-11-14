@@ -248,3 +248,5 @@ arch:../../../patches/xnu/source-corecrypto14-bootstrap.patch
 0214-sweet-static-mac-policy-registration.patch
 # Use the native iOS root/preboot cache contract; explicitly enforce signed code.
 0216-sweet-ios-shared-cache-policy-config.patch
+# Reserve the manual early-FB L2 alias from ordinary kernel-map allocations.
+0217-sweet-reserve-early-framebuffer-va.patch
