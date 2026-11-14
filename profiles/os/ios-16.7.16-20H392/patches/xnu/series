@@ -251,3 +251,4 @@ arch:../../../patches/xnu/source-corecrypto14-bootstrap.patch
 # Reserve the manual early-FB L2 alias from ordinary kernel-map allocations.
 0217-sweet-reserve-early-framebuffer-va.patch
 0218-sweet-merkle-sdk-build.patch
+0219-sweet-owner-development-supplier.patch

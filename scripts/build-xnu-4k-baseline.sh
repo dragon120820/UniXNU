@@ -182,7 +182,7 @@ if [ "$(uname -s)" = Linux ]; then
 fi
 # The baseline builds the kernel; `all` also checks the Apple kext export ABI.
 EXTRA_MAKE_ARGS=()
-# Experimental compile gate; no policy supplier, key, metadata or device deployment.
+# Source-owned DEVELOPMENT supplier; no mounted identity publication or deployment.
 SWEET_MERKLE_MODE=${XNU_SWEET_MERKLE_ROOT:-0}
 case "$SWEET_MERKLE_MODE" in 0|1) ;; *) echo 'XNU_SWEET_MERKLE_ROOT must be 0 or 1' >&2; exit 1;; esac
 if [ "$SWEET_MERKLE_MODE" = 1 ]; then
@@ -190,6 +190,7 @@ if [ "$SWEET_MERKLE_MODE" = 1 ]; then
     echo 'SWEET Merkle build requires SWEET and real source crypto' >&2; exit 1
   fi
   EXTRA_MAKE_ARGS+=("sweet_ufs.o_CFLAGS_ADD=-DSWEET_MERKLE_ROOT=1")
+  EXTRA_MAKE_ARGS+=("sweet_owner_policy.o_CFLAGS_ADD=-DSWEET_MERKLE_ROOT=1")
 fi
 # A fileset boot replaces com.apple.kernel inside a kernel collection: the
 # native executable must carry chained fixups and split-segment records.
@@ -213,6 +214,11 @@ if [ "$CRYPTO_BOOTSTRAP_MODE" != source ] && [ "$CRYPTO_BOOTSTRAP_MODE" != preli
   echo 'XNU_CRYPTO_BOOTSTRAP must be source or prelinked' >&2
   exit 1
 fi
+# The built-in owner supplier is reviewed only with source POST at EARLY_BOOT/FIRST.
+if [ "$SWEET_MERKLE_MODE" = 1 ] && [ "$CRYPTO_BOOTSTRAP_MODE" != source ]; then
+  echo 'Owner supplier requires source crypto bootstrap; prelinked ordering is unqualified' >&2
+  exit 1
+fi
 # BEGIN SWEET_MERKLE_OBJECT_IDENTITY
 # Per-object _CFLAGS_ADD is absent from XNU's common .CFLAGS dependency stamp.
 # Refuse cross-mode incremental reuse instead of silently using a stale driver.
@@ -221,6 +227,7 @@ if [ "$XNU_MACHINE_CONFIG" = SWEET ]; then
   SWEET_MODE_STAMP=$SWEET_MODE_DIR/.sweet-merkle-mode
   SWEET_PREVIOUS_MODE=$(cat "$SWEET_MODE_STAMP" 2>/dev/null || printf unknown)
   if { [ -f "$SWEET_MODE_DIR/bsd/DEVELOPMENT/sweet_ufs.o" ] || \
+       [ -f "$SWEET_MODE_DIR/bsd/DEVELOPMENT/sweet_owner_policy.o" ] || \
        [ -f "$SWEET_MODE_DIR/mach.development.sweet" ] || \
        [ -f "$SWEET_MODE_DIR/kernel.development.sweet" ]; } && \
        [ "$SWEET_PREVIOUS_MODE" != "$SWEET_MERKLE_MODE" ]; then
