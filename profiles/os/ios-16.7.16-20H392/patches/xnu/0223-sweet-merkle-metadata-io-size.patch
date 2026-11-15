@@ -1,0 +1,12 @@
+diff --git a/bsd/dev/verified_merkle_io.h b/bsd/dev/verified_merkle_io.h
+--- a/bsd/dev/verified_merkle_io.h
++++ b/bsd/dev/verified_merkle_io.h
+@@ -2,7 +2,7 @@
+ #ifndef VERIFIED_MERKLE_IO_H
+ #define VERIFIED_MERKLE_IO_H
+ #include "verified_merkle.h"
+-#define VRMI_MAX_READ 65536u
++#define VRMI_MAX_READ 1048576u
+ #define VRMI_CACHE_PAGES 32u
+ #define VRMI_FIXED_WORKSPACE (4096u+VRM_MAX_PROOF+VRMI_CACHE_PAGES*4096u)
+ #define VRMI_MAX_WORKSPACE (VRMI_FIXED_WORKSPACE+VRMI_MAX_READ)
