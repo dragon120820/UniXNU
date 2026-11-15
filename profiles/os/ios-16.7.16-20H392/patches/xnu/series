@@ -257,3 +257,5 @@ arch:../../../patches/xnu/source-corecrypto14-bootstrap.patch
 0222-sweet-owner-preboot-ramdisk.patch
 # HFS metadata bypasses raw minphys: whole-request verification/staging must cover MAXBSIZE.
 0223-sweet-merkle-metadata-io-size.patch
+# Accepted exact RO-fstab clone: update signed root material without weakening verification.
+0224-sweet-readonly-fstab-root-material.patch
