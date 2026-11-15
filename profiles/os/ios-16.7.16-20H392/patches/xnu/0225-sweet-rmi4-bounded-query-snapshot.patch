@@ -1,0 +1,83 @@
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -622,6 +622,58 @@
+ 	return touch_msg(FJ_TS_ADDR, tx, 2, NULL, 0, false);
+ }
+ 
++/* Read-only, page-0 bounded boot snapshot. No F12 configuration or frames. */
++static bool
++rmi_diag_packet(const char *name, unsigned base, unsigned off,
++    unsigned len, uint8_t *data)
++{
++	if (base > 0xfeu || off > 0xfeu - base || len == 0u ||
++	    len > 32u || len > 0xffu - (base + off)) {
++		printf("SWEET TS DIAG: %s rejected base=%#x off=%#x len=%u\n",
++		    name, base, off, len);
++		return false;
++	}
++	unsigned address = base + off;
++	int error = rmi_read((uint8_t)address, data, len);
++	if (error != 0) {
++		printf("SWEET TS DIAG: %s read failed addr=%#x len=%u error=%d\n",
++		    name, address, len, error);
++		return false;
++	}
++	printf("SWEET TS DIAG: %s addr=%#x len=%u\n", name, address, len);
++	for (unsigned i = 0; i < len; i += 8u) {
++		unsigned end = i + 8u < len ? i + 8u : len;
++		printf("SWEET TS DIAG: %s +%u", name, i);
++		for (unsigned j = i; j < end; ++j) {
++			printf(" %02x", data[j]);
++		}
++		printf("\n");
++	}
++	return true;
++}
++
++static void
++rmi_query_snapshot(void)
++{
++	uint8_t data[32] = {0};
++	printf("SWEET TS DIAG: query snapshot only; F12 parser unchanged\n");
++	(void)rmi_diag_packet("F01Q11", f01_query, 11u, 10u, data);
++	if (rmi_diag_packet("Q4", f12_query, 4u, 1u, data)) {
++		unsigned n5 = data[0];
++		if (rmi_diag_packet("Q5", f12_query, 5u, n5, data)) {
++			unsigned n6 = data[0];
++			(void)rmi_diag_packet("Q6", f12_query, 6u, n6, data);
++		}
++	}
++	if (rmi_diag_packet("Q7", f12_query, 7u, 1u, data)) {
++		unsigned n8 = data[0];
++		if (rmi_diag_packet("Q8", f12_query, 8u, n8, data)) {
++			unsigned n9 = data[0];
++			(void)rmi_diag_packet("Q9", f12_query, 9u, n9, data);
++		}
++	}
++}
++
+ static bool
+ fajita_clocks(void)
+ {
+@@ -692,7 +744,7 @@
+ 	if (rmi_write(f01_cmd, 0x01) == 0) {          /* reset */
+ 		touch_wait(100);
+ 	}
+-	if (rmi_read((uint8_t)(f01_query + 0x10u), id, 10) == 0) {
++	if (f01_query <= 0xeau && rmi_read((uint8_t)(f01_query + 0x0bu), id, 10) == 0) {
+ 		for (unsigned k = 0; k < 10; ++k) {
+ 			ts_product[k] = (char)id[k];
+ 		}
+@@ -862,11 +914,7 @@
+ 	}
+ 	printf("SWEET TS: F01 q=%#x d=%#x | F12 q=%#x c=%#x d=%#x\n",
+ 	    f01_query, f01_data, f12_query, f12_ctrl, f12_data);
+-	uint8_t q[32] = {0};
+-	if (rmi_read(f12_query, q, sizeof(q)) == 0) {
+-		printf("SWEET TS: F12 query %02x %02x %02x %02x %02x %02x %02x %02x\n",
+-		    q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7]);
+-	}
++	rmi_query_snapshot();
+ 	unsigned errors = 0, ticks = 0;
+ 	while (!st.dead) {
+ 		uint8_t status[2] = {0};
